@@ -1,11 +1,11 @@
-# GitHub Copilot Code Agent Development Environment Setup
-# このファイルは GitHub Copilot Code Agent のベース開発環境構築手順を定義します
-# 詳細: https://docs.github.com/ja/copilot/how-tos/agents/copilot-coding-agent/customizing-the-development-environment-for-copilot-coding-agent
+# Development environment for the GitHub Copilot coding agent.
+# The job must be named `copilot-setup-steps`.
+# Docs: https://docs.github.com/en/copilot/how-tos/agents/copilot-coding-agent/customizing-the-development-environment-for-copilot-coding-agent
 
 name: "GitHub Copilot Code Agent Development Environment Setup"
 
 "on":
-  workflow_dispatch: {}  # 手動実行を許可
+  workflow_dispatch: {}
   push:
     paths:
       - .github/workflows/copilot-setup-steps.yml
@@ -13,7 +13,6 @@ name: "GitHub Copilot Code Agent Development Environment Setup"
     paths:
       - .github/workflows/copilot-setup-steps.yml
 
-# 環境変数の定義
 env:
   PYTHON_VERSION: "3.13"  # renovate: datasource=python-version
   TIMEZONE: "Asia/Tokyo"
@@ -26,41 +25,26 @@ jobs:
   copilot-setup-steps:
     name: "Development Environment Setup"
     runs-on: ubuntu-latest
-    
+
     steps:
-      # 1. リポジトリのチェックアウト
-      - name: "📁 Checkout Repository"
+      - name: "Checkout Repository"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0  # 全履歴を取得（バージョン情報用）
+          fetch-depth: 0  # full history: the version is derived from git tags
 
-      # 2. Python環境のセットアップ
-      - name: "🐍 Setup Python Environment"
+      - name: "Setup Python Environment"
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'  # pip キャッシュを有効化
+          cache: 'pip'
 
-      # 3. システムの基本情報表示
-      - name: "📊 Display System Information"
-        run: |
-          echo "=== システム情報 ==="
-          echo "OS: $(uname -a)"
-          echo "Python: $(python3 --version)"
-          echo "Pip: $(pip --version)"
-          echo "Timezone: ${{ env.TIMEZONE }}"
-          echo "Current directory: $(pwd)"
-          echo "Current user: $(whoami)"
-
-      # 4. タイムゾーンの設定
-      - name: "🌏 Configure Timezone"
+      - name: "Configure Timezone"
         run: |
           sudo timedatectl set-timezone ${{ env.TIMEZONE }}
-          echo "タイムゾーンを ${{ env.TIMEZONE }} に設定しました"
+          echo "Timezone set to ${{ env.TIMEZONE }}"
           date
 
-      # 5. 必要なシステムパッケージのインストール
-      - name: "📦 Install System Dependencies"
+      - name: "Install System Dependencies"
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -69,29 +53,23 @@ jobs:
             curl \
             jq \
             tree
-          echo "システムパッケージのインストールが完了しました"
 
-      # 6. Pythonの依存関係をアップグレード
-      - name: "⬆️ Upgrade Python Package Manager"
+      - name: "Upgrade Python Package Manager"
         run: |
           python3 -m pip install --upgrade pip==25.1.1  # renovate: datasource=pypi depName=pip
-          echo "pip をアップグレードしました: $(pip --version)"
+          echo "pip upgraded: $(pip --version)"
 
-      # 7. プロジェクトの依存関係をインストール
-      - name: "📚 Install Project Dependencies"
+      - name: "Install Project Dependencies"
         run: |
           if [ -f "requirements.txt" ]; then
-            echo "requirements.txt から依存関係をインストール中..."
             pip install -r requirements.txt
-            echo "✅ 依存関係のインストールが完了しました"
             pip list
           else
-            echo "❌ requirements.txt が見つかりません"
+            echo "requirements.txt not found"
             exit 1
           fi
 
-      # 8. 開発用の追加パッケージをインストール
-      - name: "🛠️ Install Development Tools"
+      - name: "Install Development Tools"
         run: |
           pip install \
             black \
@@ -101,161 +79,9 @@ jobs:
             pytest-cov \
             ipython \
             jupyter
-          echo "✅ 開発ツールのインストールが完了しました"
 
-      # 9. プロジェクトディレクトリ構造の作成
-      - name: "📁 Create Project Directory Structure"
+      - name: "Validate Project Module"
         run: |
-          echo "プロジェクトディレクトリ構造を作成中..."
-          
-          # データディレクトリの作成
-          mkdir -p /tmp/twitter-blocker-data/{cache,logs,backup}
-          
-          # 開発用の設定ディレクトリ
-          mkdir -p /tmp/twitter-blocker-dev/{test-data,debug-output}
-          
-          # 権限設定
-          chmod 755 /tmp/twitter-blocker-data
-          chmod 755 /tmp/twitter-blocker-dev
-          
-          echo "✅ ディレクトリ構造を作成しました:"
-          tree /tmp/twitter-blocker-data
-          tree /tmp/twitter-blocker-dev
-
-      # 10. 環境変数の設定とエクスポート
-      - name: "🔧 Configure Environment Variables"
-        run: |
-          echo "開発環境用の環境変数を設定中..."
-          
-          # 環境変数ファイルの作成
-          cat > /tmp/twitter-blocker.env << EOF
-          # Twitter Bulk Blocker Development Environment
-          export TWITTER_COOKIES_PATH="/tmp/twitter-blocker-data/cookies.json"
-          export TWITTER_USERS_FILE="/tmp/twitter-blocker-data/users.json"
-          export TWITTER_BLOCK_DB="/tmp/twitter-blocker-data/block_history.db"
-          export CACHE_DIR="/tmp/twitter-blocker-data/cache"
-          export TZ="${{ env.TIMEZONE }}"
-          export PYTHONDONTWRITEBYTECODE=1
-          export PYTHONUNBUFFERED=1
-          
-          # デバッグ用設定
-          export TWITTER_DEBUG_MODE=1
-          export TWITTER_LOG_LEVEL=DEBUG
-          EOF
-          
-          echo "✅ 環境変数ファイルを作成しました: /tmp/twitter-blocker.env"
-          echo "環境変数をロードするには: source /tmp/twitter-blocker.env"
-          cat /tmp/twitter-blocker.env
-
-      # 11. プロジェクトモジュールの検証
-      - name: "🧪 Validate Project Module"
-        run: |
-          echo "プロジェクトモジュールの検証中..."
-          
-          # Pythonパッケージとして認識されるかテスト
-          python3 -c "import twitter_blocker; print('✅ モジュールのインポートに成功しました')"
-          
-          # バージョン情報の確認
-          python3 -m twitter_blocker --version || echo "バージョン情報の取得に失敗（開発環境では正常）"
-          
-          # ヘルプ表示の確認
+          python3 -c "import twitter_blocker; print('twitter_blocker imported successfully')"
+          python3 -m twitter_blocker --version || echo "Could not read the version (expected in a development checkout)"
           python3 -m twitter_blocker --help
-          
-          echo "✅ モジュール検証が完了しました"
-
-      # 12. 開発用のサンプルファイル作成
-      - name: "📝 Create Development Sample Files"
-        run: |
-          echo "開発用サンプルファイルを作成中..."
-          
-          # サンプルクッキーファイル（開発用）
-          cat > /tmp/twitter-blocker-data/cookies.sample.json << 'EOF'
-          {
-            "comment": "これは開発用のサンプルファイルです。実際のクッキー情報は含まれていません。",
-            "ct0": "sample_csrf_token",
-            "auth_token": "sample_auth_token",
-            "twid": "sample_twitter_id"
-          }
-          EOF
-          
-          # サンプルユーザーファイル（開発用）
-          cat > /tmp/twitter-blocker-data/users.sample.json << 'EOF'
-          {
-            "comment": "これは開発用のサンプルファイルです。テスト用のユーザーデータを含みます。",
-            "users": [
-              {"username": "test_user_1", "id": "123456789"},
-              {"username": "test_user_2", "id": "987654321"}
-            ]
-          }
-          EOF
-          
-          echo "✅ サンプルファイルを作成しました:"
-          ls -la /tmp/twitter-blocker-data/*.sample.json
-
-      # 13. 開発環境の検証
-      - name: "✅ Verify Development Environment"
-        run: |
-          echo "=== 開発環境検証レポート ==="
-          echo "🐍 Python: $(python3 --version)"
-          echo "📦 Pip: $(pip --version)"
-          echo "🕐 Timezone: $(date '+%Z %z')"
-          echo "📁 Working Directory: $(pwd)"
-          
-          echo ""
-          echo "=== インストール済みパッケージ ==="
-          pip list | grep -E "(requests|pytz|black|flake8|mypy|pytest)"
-          
-          echo ""
-          echo "=== プロジェクト構造 ==="
-          ls -la twitter_blocker/
-          
-          echo ""
-          echo "=== データディレクトリ ==="
-          ls -la /tmp/twitter-blocker-data/
-          
-          echo ""
-          echo "=== 環境変数 ==="
-          echo "TWITTER_COOKIES_PATH: /tmp/twitter-blocker-data/cookies.json"
-          echo "TWITTER_USERS_FILE: /tmp/twitter-blocker-data/users.json"
-          echo "TWITTER_BLOCK_DB: /tmp/twitter-blocker-data/block_history.db"
-          echo "CACHE_DIR: /tmp/twitter-blocker-data/cache"
-          
-          echo ""
-          echo "✅ 開発環境のセットアップが完了しました！"
-
-      # 14. 開発ガイドの表示
-      - name: "📖 Display Development Guide"
-        run: |
-          echo "=== Twitter Bulk Blocker 開発ガイド ==="
-          echo ""
-          echo "🚀 基本的な実行方法:"
-          echo "  python3 -m twitter_blocker --help"
-          echo "  python3 -m twitter_blocker --stats"
-          echo "  python3 -m twitter_blocker --test-user <username>"
-          echo ""
-          echo "🧪 テスト実行:"
-          echo "  pytest twitter_blocker/ -v"
-          echo "  python3 -m twitter_blocker --debug"
-          echo ""
-          echo "🔧 開発ツール:"
-          echo "  black twitter_blocker/  # コードフォーマット"
-          echo "  flake8 twitter_blocker/  # リンター"
-          echo "  mypy twitter_blocker/   # 型チェック"
-          echo ""
-          echo "📁 重要なファイル:"
-          echo "  - twitter_blocker/__main__.py (エントリーポイント)"
-          echo "  - twitter_blocker/api.py (Twitter API管理)"
-          echo "  - twitter_blocker/database.py (SQLite管理)"
-          echo "  - twitter_blocker/manager.py (ワークフロー制御)"
-          echo ""
-          echo "🌐 環境変数設定:"
-          echo "  source /tmp/twitter-blocker.env"
-          echo ""
-          echo "📖 詳細なドキュメント:"
-          echo "  .github/copilot-instructions.md"
-          echo "  README.md"
-          echo ""
-          echo "⚠️ 注意事項:"
-          echo "  - 実際のTwitter認証には本物のcookies.jsonが必要です"
-          echo ""
-          echo "✨ Happy Coding with GitHub Copilot! ✨"
