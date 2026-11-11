@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# update-containers - Cinnamonサーバーでのコンテナイメージ更新処理
-# 
-# 処理フロー:
-# 1. docker compose down を実行（この後、他のプロセスが自動的にpull/upを実行）
-# 2. 自動デプロイ完了まで待機・監視
-# 3. 最終的なバージョン確認
+# update-containers - update the container image on the Cinnamon server
+#
+# Flow:
+# 1. Run docker compose down (another process then pulls and brings the stack up)
+# 2. Wait for the automatic deployment to finish
+# 3. Verify the final version
 
 set -e
 
@@ -13,7 +13,7 @@ echo "=== TWITTER BULK BLOCKER CONTAINER UPDATE ==="
 echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
 echo
 
-# 引数チェック
+# Arguments
 FORCE_UPDATE=false
 TIMEOUT_MINUTES=30
 SKIP_WAIT=false
@@ -59,7 +59,7 @@ done
 echo "🔍 PRE-UPDATE VERIFICATION"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 現在の稼働状況確認
+# Current state
 echo "📊 現在の稼働状況:"
 RUNNING_CONTAINERS=$(ssh Cinnamon "docker ps --filter 'name=bulk-block-users' --format '{{.Names}}' | wc -l")
 echo "  稼働中コンテナ数: $RUNNING_CONTAINERS"
@@ -76,7 +76,7 @@ if [ "$RUNNING_CONTAINERS" -eq 0 ]; then
     fi
 fi
 
-# 現在のバージョン確認
+# Current version
 echo
 echo "🔢 更新前バージョン確認:"
 CURRENT_CONTAINER=$(ssh Cinnamon "docker ps --filter 'name=bulk-block-users' --format '{{.Names}}' | head -1")
@@ -91,7 +91,7 @@ else
     echo "  現在稼働中: なし"
 fi
 
-# GitHub最新リリース確認
+# Latest GitHub release
 echo "🔍 GitHub最新リリース確認:"
 UPDATE_SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 RELEASE_CHECK_OUTPUT=$("$UPDATE_SCRIPT_DIR/check-latest-release" --no-running-check 2>/dev/null || echo "")
@@ -105,7 +105,7 @@ else
     echo "  ⚠️ GitHub リリース情報取得失敗"
 fi
 
-# 最新イメージのバージョン確認
+# Version of the latest image
 LATEST_VERSION=$(ssh Cinnamon "timeout 15 docker run --rm --entrypoint python3 ghcr.io/book000/twitter-bulk-blocker:latest -m twitter_blocker --version 2>/dev/null" | sed 's/^python3 -m twitter_blocker //')
 if [ -n "$LATEST_VERSION" ]; then
     echo "  最新イメージ: $LATEST_VERSION"
@@ -113,7 +113,7 @@ else
     echo "  最新イメージ: 取得失敗"
 fi
 
-# リリースとイメージの整合性確認
+# Release vs image consistency
 if [ -n "$LATEST_GITHUB_TAG" ] && [ -n "$LATEST_VERSION" ]; then
     GITHUB_VERSION_CLEAN=$(echo "$LATEST_GITHUB_TAG" | sed 's/^v//')
     if [ "$GITHUB_VERSION_CLEAN" = "$LATEST_VERSION" ]; then
@@ -128,7 +128,7 @@ echo
 echo "🚀 CONTAINER UPDATE EXECUTION"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 最終確認（--forceでない場合）
+# Final confirmation (unless --force)
 if [ "$FORCE_UPDATE" = false ]; then
     echo "⚠️ 以下の処理を実行します:"
     echo "  1. docker compose down の実行"
@@ -146,7 +146,7 @@ fi
 echo "🔄 docker compose down を実行中..."
 UPDATE_START_TIME=$(date +%s)
 
-# docker compose downを実行
+# Run docker compose down
 ssh Cinnamon "cd /opt/docker && docker compose down" || {
     echo "❌ docker compose down が失敗しました"
     exit 1
@@ -155,7 +155,7 @@ ssh Cinnamon "cd /opt/docker && docker compose down" || {
 echo "✅ docker compose down 完了"
 echo "⏳ 自動デプロイプロセス（pull & up）の開始を待機中..."
 
-# --skip-waitが指定されている場合はここで終了
+# Stop here with --skip-wait
 if [ "$SKIP_WAIT" = true ]; then
     echo "🏁 --skip-wait指定のため、docker compose downのみで終了"
     echo "💡 デプロイ完了確認は以下で実行："
@@ -163,7 +163,7 @@ if [ "$SKIP_WAIT" = true ]; then
     exit 0
 fi
 
-# 待機スクリプトを実行
+# Wait for the deployment
 echo "🕐 デプロイ完了待機スクリプトを開始..."
 UPDATE_SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 "$UPDATE_SCRIPT_DIR/wait-for-deployment" --timeout "$TIMEOUT_MINUTES" --update-start-time "$UPDATE_START_TIME"

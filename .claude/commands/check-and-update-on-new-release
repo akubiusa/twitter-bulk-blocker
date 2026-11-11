@@ -1,13 +1,9 @@
 #!/bin/bash
 
-# check-and-update-on-new-release - マージ後リリース監視と一回だけ自動更新
+# check-and-update-on-new-release - alias for auto-update-on-release
+# Use after merging a PR: runs docker compose down once if a new release was published, then exits.
 #
-# 用途:
-# - PRマージ後にリリースが作成されるのを監視
-# - 新リリース検出時に一回だけdocker compose downを実行
-# - 実行後は自動終了（バックグラウンド実行なし）
-#
-# 実行例:
+# Examples:
 # .claude/commands/check-and-update-on-new-release
 # .claude/commands/check-and-update-on-new-release --dry-run
 

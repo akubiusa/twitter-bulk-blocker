@@ -1,7 +1,6 @@
 #!/bin/bash
 
-# check-cinnamon - Cinnamonサーバー軽量監視コマンド（分割版）
-# 従来の巨大なスクリプト（2637行）を機能別に分割
+# check-cinnamon - lightweight monitoring of the Cinnamon server
 
 set -e
 
@@ -9,7 +8,6 @@ echo "=== CINNAMON SERVER QUICK CHECK ==="
 echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
 echo ""
 
-# オプション解析
 DETAILED=false
 ERRORS_ONLY=false
 MODULES=""
@@ -66,12 +64,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# エラーのみモードの場合
+# errors-only mode
 if [ "$ERRORS_ONLY" = true ]; then
     exec .claude/commands/check-cinnamon-errors
 fi
 
-# 特定モジュールのみ実行
+# run a single module
 if [ -n "$MODULES" ]; then
     for module in $MODULES; do
         case $module in
@@ -114,28 +112,28 @@ if [ -n "$MODULES" ]; then
     exit 0
 fi
 
-# 基本チェック（軽量版）
+# basic check
 echo "🔢 VERSION & CONTAINER STATUS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# バージョン情報（簡潔版）
+# version
 .claude/commands/check-cinnamon-version --brief
 
 echo ""
 
-# コンテナ状態（簡潔版）
+# container status
 .claude/commands/check-cinnamon-containers --brief
 
 echo ""
 
-# 403エラー分析（簡潔版）
+# 403 error summary
 echo "🚨 403 ERROR ANALYSIS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 .claude/commands/check-cinnamon-errors --brief
 
 echo ""
 
-# 詳細分析（詳細モードのみ）
+# detailed mode only
 if [ "$DETAILED" = true ]; then
     echo "📈 COMPLETION RATE ANALYSIS"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -153,11 +151,11 @@ if [ "$DETAILED" = true ]; then
     echo ""
 fi
 
-# 推奨アクション
+# recommended actions
 echo "💡 RECOMMENDED ACTIONS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 簡単な推奨アクション判定（正確なパターンマッチング）
+# classify by 403 count over the last 10 minutes
 TOTAL_ERRORS=$(ssh Cinnamon 'total=0; for container in bulk-block-users-book000-1 bulk-block-users-ihc_amot-1 bulk-block-users-book000_vrc-1 bulk-block-users-authorizedkey-1 bulk-block-users-tomachi_priv-1 bulk-block-users-tomarabbit-1; do count=$(docker logs $container --since="10m" 2>&1 | grep -E "(🚨.*403エラー.*回検出|403 Forbidden|HTTP/1.1 403)" | wc -l); total=$((total + count)); done; echo $total')
 
 if [ "$TOTAL_ERRORS" -gt 50 ]; then

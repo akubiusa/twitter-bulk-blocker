@@ -1,19 +1,19 @@
 #!/bin/bash
 
-# check-cinnamon-completion - 完了率分析専用モジュール
+# check-cinnamon-completion - completion rate analysis
 
 set -e
 
 echo "📈 COMPLETION RATE ANALYSIS (永続的失敗を処理済みとして扱う)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 各サービスの統計を取得
+# per-service stats
 SERVICES="book000 ihc_amot book000_vrc authorizedkey tomachi_priv tomarabbit"
 
 for service in $SERVICES; do
     echo "📊 Service: $service"
     
-    # Docker execでサービスの統計を取得
+    # query stats via docker exec
     STATS=$(ssh Cinnamon "docker exec bulk-block-users-${service}-1 python3 -m twitter_blocker --stats 2>/dev/null | grep -E '全対象ユーザー|ブロック済み|永続的失敗|実質完了率|実質未処理|失敗|ステータス別|HTTPエラー別'" 2>/dev/null || echo "統計取得失敗")
     
     if [ "$STATS" != "統計取得失敗" ]; then
@@ -23,7 +23,7 @@ for service in $SERVICES; do
     else
         echo "  ⚠️ 統計データ取得に失敗しました"
         
-        # 代替手段: ログから基本情報を推測
+        # fallback: infer from logs
         RECENT_BLOCKS=$(ssh Cinnamon "docker logs bulk-block-users-${service}-1 --since='1h' 2>&1 | grep -c 'ブロック.*実行' || echo '0'")
         RECENT_ERRORS=$(ssh Cinnamon "docker logs bulk-block-users-${service}-1 --since='1h' 2>&1 | grep -c '403' || echo '0'")
         
@@ -33,7 +33,7 @@ for service in $SERVICES; do
     echo ""
 done
 
-# サービス比較サマリー
+# service comparison summary
 echo "📊 Service Comparison Summary:"
 echo "  🏆 Complete Services (100%):"
 echo "    - ihc_amot, book000_vrc"

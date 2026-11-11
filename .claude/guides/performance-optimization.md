@@ -1,173 +1,44 @@
-# パフォーマンス最適化手法
+# Performance Optimization
 
-## バッチ処理最適化
+What the tool does to keep API and database load low, and how to measure it. Verified against `manager.py`, `api.py`, `database.py` and `performance_monitor.py`.
 
-### 最適バッチサイズ
-```python
-OPTIMAL_BATCH_SIZES = {
-    "user_lookup": 50,           # UsersByRestIds API
-    "screen_name_conversion": 25, # UserByScreenName API
-    "database_queries": 100,     # SQLite IN句
-}
+## Batching
 
-# バッチサイズの動的調整
-def adjust_batch_size(self, success_rate, current_size):
-    if success_rate > 0.95:
-        return min(current_size + 10, 50)  # 成功率高い→増加
-    elif success_rate < 0.8:
-        return max(current_size - 10, 10)  # 成功率低い→減少
-    return current_size
-```
+- `process_bulk_block(max_users, delay=1.0, batch_size=50)` processes user IDs in batches of 50.
+  `delay` (CLI `--delay`, default 1.0 s) is the pause between batches for user-ID input and after each executed block for screen-name input.
+- For user IDs, each batch first does one `get_permanent_failures_batch()` query, then `get_users_info_batch()` for the users not already blocked or skipped.
+  `get_users_info_batch()` serves cached users locally and sends the rest to `UsersByRestIds` in chunks of `batch_size`.
+- For screen names, `get_users_info_by_screen_names()` resolves names one by one (UserByScreenName returns relationship flags, so it fills all caches) and only batches the relationship fetch for users that were found in the lookup cache.
+- Never add a per-user API or DB call inside a loop where a batch method exists (`get_users_info_batch`, `get_permanent_failures_batch`, `get_blocked_users_set`).
 
-### N+1問題の完全回避
-```python
-# ✅ 推奨: 事前バッチ取得
-def process_users_optimized(self, user_ids):
-    # 1. 永続的失敗を一括チェック
-    permanent_failures = self.database.get_permanent_failures_batch(user_ids)
-    
-    # 2. 処理対象の絞り込み
-    processable_ids = [uid for uid in user_ids if uid not in permanent_failures]
-    
-    # 3. バッチAPIで一括取得
-    users_info = self.api.get_users_info_batch(processable_ids)
-    
-    # 4. バッチ処理実行
-    return self._process_batch(users_info)
+## Database
 
-# ❌ 避ける: ループ内個別処理
-def process_users_inefficient(self, user_ids):
-    for user_id in user_ids:  # N+1問題発生
-        if self.database.is_permanent_failure(user_id):  # 個別DB
-            continue
-        user_info = self.api.get_user_info_by_id(user_id)  # 個別API
-```
+- `get_permanent_failures_batch()` uses a single `IN (?, ?, ...)` query.
+  SQLite limits the number of bound parameters per statement (999 on older builds, 32766 on SQLite 3.32+), so keep the batch size at or below the existing 50.
+- The schema (`block_history`, `process_log` in `database.py`) defines no indexes except the `UNIQUE(user_id)` constraint.
+  Queries by `screen_name` or `status` scan the table; add an index only after measuring a slowdown on a large `block_history`.
+- Most `DatabaseManager` methods open a connection with `sqlite3.connect()` and call `close()` explicitly; `is_permanent_failure`, `get_permanent_failure_info` and `get_permanent_failures_batch` use only `with sqlite3.connect(...)`.
+  `with sqlite3.connect(...)` commits or rolls back but does not close the connection; call `close()` as well (or wrap it in `contextlib.closing`) when adding new queries.
 
-## データベース最適化
+## Caching
 
-### バッチクエリパターン
-```python
-# SQLite IN句での一括処理
-def get_permanent_failures_batch(self, identifiers, user_format="screen_name"):
-    placeholders = ",".join("?" * len(identifiers))
-    
-    if user_format == "user_id":
-        query = f"""
-            SELECT user_id, user_status, error_message 
-            FROM block_history 
-            WHERE user_id IN ({placeholders}) AND status = 'failed'
-        """
-    else:
-        query = f"""
-            SELECT screen_name, user_status, error_message 
-            FROM block_history 
-            WHERE screen_name IN ({placeholders}) AND status = 'failed'
-        """
-    
-    with sqlite3.connect(self.db_file) as conn:
-        cursor = conn.cursor()
-        cursor.execute(query, [str(id_) for id_ in identifiers])
-        return {row[0]: {"status": row[1], "message": row[2]} 
-                for row in cursor.fetchall()}
-```
+Lookup, profile and relationship results are cached for 30 days; see `caching-strategy.md`.
+A fully cached run makes no lookup requests, so the cache hit rate is the main lever for run time after the first pass.
 
-### リソース管理の最適化
-```python
-# ✅ 推奨: context manager使用
-def database_operation(self):
-    with sqlite3.connect(self.db_file) as conn:
-        cursor = conn.cursor()
-        # 自動的にcommit/rollback/close
+## Measuring
 
-# ❌ 避ける: 明示的なopen/close
-def database_operation_bad(self):
-    conn = sqlite3.connect(self.db_file)  # リーク可能性
-    # close忘れのリスク
-```
+- `PerformanceMonitor` (created by `BulkBlockManager`, optional) records throughput into `performance_metrics`, `processing_speed_stats` and `performance_alerts` in the same SQLite file.
+- Per-window bottleneck flags: fewer than 1 request/s, average processing time above 5 s, success rate below 80%, or error rate above 20%.
+- Alerts from `check_degradation_thresholds()`: below 0.1 request/s (CRITICAL), success rate below 50% (HIGH), average processing time above 10 s (MEDIUM).
+- `analyze_performance_degradation()` compares the last hour of a session with its first hour.
+- `--stats` prints block statistics; `TwitterAPI.get_cache_stats()` returns cache entry counts.
 
-## メモリ効率化
+Real throughput is bounded by `--delay` and the X rate limits (the 429 wait is 60-900 s), not by local processing.
+Compare runs against your own baseline from the tables above rather than a fixed target.
 
-### ストリーミング処理
-```python
-def process_large_dataset(self, large_user_list):
-    batch_size = 50
-    for i in range(0, len(large_user_list), batch_size):
-        batch = large_user_list[i:i + batch_size]
-        
-        # バッチ処理
-        self._process_batch(batch)
-        
-        # メモリ解放
-        del batch
-        
-        # レート制限対策
-        time.sleep(1)
-```
+## Checklist for a change
 
-### キャッシュメモリ管理
-```python
-def cleanup_expired_cache(self):
-    current_time = time.time()
-    
-    for cache_dir in [self.lookups_cache_dir, self.profiles_cache_dir]:
-        for cache_file in cache_dir.glob("*.json"):
-            if current_time - cache_file.stat().st_mtime > self.cache_ttl:
-                cache_file.unlink()  # 期限切れファイル削除
-```
-
-## パフォーマンス測定
-
-### ベンチマーク実装
-```python
-def benchmark_operation(operation_func, test_data, iterations=3):
-    import time
-    
-    times = []
-    for _ in range(iterations):
-        start = time.time()
-        result = operation_func(test_data)
-        elapsed = time.time() - start
-        times.append(elapsed)
-    
-    avg_time = sum(times) / len(times)
-    print(f"平均実行時間: {avg_time:.4f}秒")
-    print(f"スループット: {len(test_data) / avg_time:.1f}件/秒")
-    
-    return result
-```
-
-### パフォーマンス目標値
-```python
-PERFORMANCE_TARGETS = {
-    "user_processing_rate": 50,      # 件/秒以上
-    "cache_hit_rate": 0.8,          # 80%以上
-    "api_call_reduction": 0.7,       # 70%削減目標
-    "database_query_time": 0.01,     # 10ms以下/クエリ
-    "memory_usage": 100,             # 100MB以下
-}
-
-def validate_performance(current_metrics):
-    violations = []
-    for metric, target in PERFORMANCE_TARGETS.items():
-        if current_metrics.get(metric, 0) < target:
-            violations.append(f"{metric}: {current_metrics[metric]} < {target}")
-    
-    if violations:
-        print("⚠️ パフォーマンス基準未達:")
-        for violation in violations:
-            print(f"  - {violation}")
-```
-
-## 最適化チェックリスト
-
-### 実装前確認事項
-- [ ] バッチ処理可能な箇所の特定
-- [ ] N+1問題の潜在箇所確認
-- [ ] キャッシュ活用可能性評価
-- [ ] メモリ使用量予測
-
-### 実装後検証事項
-- [ ] パフォーマンステスト実行
-- [ ] メモリプロファイリング
-- [ ] キャッシュヒット率測定
-- [ ] API呼び出し数削減確認
+- [ ] Any new loop over users uses an existing batch method or adds one.
+- [ ] New cache reads go through `_combine_profile_and_relationship()` or the existing cache helpers.
+- [ ] New DB connections are closed.
+- [ ] `--delay` and batch size are not lowered without considering the 429 behavior.

@@ -1,53 +1,33 @@
-Twitter APIの詳細状態とシステム健全性を包括的に確認します。
+Check the Twitter/X API state and local data health (read-only; changes nothing).
 
-確認対象: $ARGUMENTS （auth, cache, database, rate_limit, all / 省略時は全体チェック）
+Scope: $ARGUMENTS (auth, cache, database, rate_limit, all; default all)
 
-### 🔍 API状態診断手順
+## auth
 
-**認証状態確認** (auth/all の場合):
-1. Cookie有効性の検証
-2. Twitter/X認証レスポンスの確認
-3. 拡張ヘッダー機能の動作状況
-4. 認証エラー履歴の分析
+- Cookie file exists at `TWITTER_COOKIES_PATH` (default `cookies.json`; `/data/cookies.json` in Docker) and contains the Twitter-domain cookies (`CookieManager` in `twitter_blocker/config.py`).
+- Look for 401/403 and authentication errors in the logs.
+  For production, `.claude/commands/check-cinnamon-errors` and `.claude/cinnamon-logs.sh` do this.
+- Header enhancement is on by default; `--disable-header-enhancement` turns it off and `--enable-forwarded-for` adds `x-xp-forwarded-for`.
+  `get_effectiveness_report()` in `api.py` compares success rates with and without enhanced headers.
 
-**キャッシュ効率分析** (cache/all の場合):
-1. 3層キャッシュ（Lookup/Profile/Relationship）の統計表示
-2. キャッシュヒット率の測定
-3. TTL効率性の評価
-4. メモリ使用量の確認
+## cache
 
-**データベース状態確認** (database/all の場合):
-1. SQLite WALモードの動作確認
-2. インデックス使用状況の分析
-3. 永続的失敗キャッシュの統計
-4. データ整合性の検証
+- Three file caches under `CACHE_DIR` (default `/data/cache`): `lookups/`, `profiles/`, `relationships/`; TTL 30 days.
+- `TwitterAPI.get_cache_stats()` returns total/valid/expired counts per cache.
+  The CLI does not expose it, so call it from a Python shell or count files with `find <dir> -name '*.json'`.
 
-**レート制限分析** (rate_limit/all の場合):
-1. GraphQL API（150リクエスト/15分）の使用状況
-2. REST API（300ブロック/15分）の使用状況
-3. 制限回復時間の予測
-4. 最適な処理ペース提案
+## database
 
-### 📊 実行内容
-1. **現在の設定確認**:
-   - cookies.jsonの存在と有効性
-   - キャッシュディレクトリの状態
-   - データベースファイルの健全性
+- SQLite file at `TWITTER_BLOCK_DB` (`/data/block_history.db` in Docker).
+- `python3 -m twitter_blocker --stats` prints totals, blocked, permanent failures (suspended/not_found/deactivated), failed and retry candidates.
+- `sqlite3 <db> 'PRAGMA integrity_check;'` for file integrity.
 
-2. **パフォーマンス指標測定**:
-   - API応答時間の測定
-   - キャッシュヒット率の算出
-   - 処理スループットの評価
+## rate_limit
 
-3. **問題検出と報告**:
-   - 認証エラーの検出
-   - パフォーマンス低下の原因特定
-   - 推奨改善案の提示
+- Rate-limit information comes from response headers (`x-rate-limit-remaining`, `x-rate-limit-reset`) and is printed as `Rate Limit: remaining/limit` in `--debug` output.
+- On a 429 the client waits until the reset time plus 10 s, clamped to 60-900 s (300 s when the header is missing).
+- Do not assume fixed limits; read them from the headers.
 
-### 📋 出力形式
-- 状態概要（健全性スコア）
-- 詳細統計情報
-- 検出された問題点
-- 推奨改善アクション
+## Report
 
-注意: このコマンドは **読み取り専用** で、既存データを変更しません。
+- Overall status, per-area findings, detected problems, recommended actions.

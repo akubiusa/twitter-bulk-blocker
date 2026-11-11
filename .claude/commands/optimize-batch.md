@@ -1,53 +1,32 @@
-指定された処理のバッチ最適化を実行し、N+1問題の解決とパフォーマンス向上を図ります。
+Find and fix inefficient batch handling (N+1 queries, per-item API calls).
 
-最適化対象: $ARGUMENTS （user_lookup, database_query, api_calls, all）
+Target: $ARGUMENTS (user_lookup, database_query, api_calls, all)
 
-### 🔍 Phase 1: 現状分析
-**現在のバッチ処理評価**:
-1. 既存バッチサイズの測定（デフォルト50件）
-2. 処理時間とスループットの測定
-3. メモリ使用量とI/O負荷の分析
-4. エラー率の確認
+## Current behavior to check first
 
-**N+1問題の検出**:
-1. 個別API呼び出しパターンの特定
-2. 不要なデータベースクエリの検出
-3. キャッシュ効率性の評価
-4. 並行処理の阻害要因の分析
+- `BulkBlockManager.process_bulk_block(max_users, delay, batch_size=50)` in `twitter_blocker/manager.py` processes users in batches of `batch_size`.
+- Per batch, permanent failures are loaded with one query (`DatabaseManager.get_permanent_failures_batch`); only unchecked IDs go to the API.
+- `TwitterAPI.get_users_info_batch(user_ids, batch_size=50)` checks the caches, then sends batched GraphQL `UsersByRestIds` requests.
+- Screen-name inputs are resolved through the lookup cache, then `UserByScreenName`.
+- Blocking is one `blocks/create.json` request per user, followed by the `--delay` pause (default 1.0 s).
+- Each `DatabaseManager` method opens its own SQLite connection (`sqlite3.connect`), and the code sets no PRAGMAs and creates no explicit indexes.
 
-### ⚡ Phase 2: 最適化実装
-**user_lookup最適化** (user_lookup/all の場合):
-- Twitter GraphQL API の batch_size 最適化
-- レート制限を考慮した最適バッチサイズ算出
-- 永続的失敗の事前チェック強化
-- キャッシュヒット率の向上
+## user_lookup
 
-**database_query最適化** (database_query/all の場合):
-- SQLite バッチINSERT/UPDATEの実装
-- インデックス使用の最適化
-- トランザクション境界の調整
-- WALモード効率性の向上
+- Is `batch_size` appropriate for `UsersByRestIds` given rate-limit waits?
+- Are cache and permanent-failure checks done before the API call for every ID?
 
-**api_calls最適化** (api_calls/all の場合):
-- 複数API endpoint の統合処理
-- レスポンス待機時間の最適化
-- 拡張ヘッダー生成の効率化
-- エラーハンドリングの高速化
+## database_query
 
-### 📊 Phase 3: 性能検証
-1. 最適化前後のベンチマーク実行
-2. 処理速度（件/秒）の比較
-3. リソース使用量の変化測定
-4. エラー率の改善確認
+- Look for per-user queries inside loops and for repeated connection opens in hot paths.
+- Consider batching inserts into one transaction and measure with `EXPLAIN QUERY PLAN` before adding indexes.
 
-### 💾 Phase 4: 実装とテスト
-1. 最適化されたコードの実装
-2. 既存テストの実行と新規テスト追加
-3. 品質チェック（lint/typecheck）の実行
-4. 本番環境での段階的展開提案
+## api_calls
 
-目標指標:
-- 処理速度: 50件/秒 → 100件/秒以上
-- キャッシュヒット率: 80% → 90%以上
-- メモリ使用量: 現状維持または削減
-- エラー率: 1%以下維持
+- Look for requests that could be combined and for avoidable header-generation cost.
+
+## Verification
+
+1. Measure before and after on the same input: users per minute, API request count, cache hit lines, error count.
+2. `python3 -m py_compile twitter_blocker/*.py`, then a debug run with `--max-users` on a small set.
+3. Roll out gradually on production (one service first); see `.claude/operations/` for the host layout.

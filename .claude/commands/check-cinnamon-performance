@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# check-cinnamon-performance - パフォーマンス指標分析・履歴比較モジュール
+# check-cinnamon-performance - performance metrics and history comparison
 
 set -e
 
 BRIEF=false
 COMPARE=false
 
-# オプション解析
+# Parse options
 while [[ $# -gt 0 ]]; do
     case $1 in
         --brief|-b)
@@ -24,7 +24,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# パフォーマンス履歴ファイル
+# Performance history file
 PERF_HISTORY="/tmp/cinnamon-performance-history.json"
 CURRENT_TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
@@ -33,15 +33,14 @@ if [ "$BRIEF" = false ]; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 fi
 
-# 現在のパフォーマンス指標を収集
+# Collect current performance metrics
 collect_current_metrics() {
-    # アカウント別処理数・エラー数・成功率を収集
+    # Per-account processed/error counts and success rate
     declare -A accounts=()
     declare -A total_processed=()
     declare -A total_errors=()
     declare -A success_rates=()
     
-    # アカウントリスト
     account_list=("book000" "ihc_amot" "book000_vrc" "authorizedkey" "tomachi_priv" "tomarabbit")
     
     total_processed_all=0
@@ -50,22 +49,22 @@ collect_current_metrics() {
     for account in "${account_list[@]}"; do
         container="bulk-block-users-${account}-1"
         
-        # 最近24時間のログから処理数とエラー数を取得
+        # Processed/error counts from the last 24 hours of logs
         processed=$(ssh Cinnamon "docker logs $container --since='24h' 2>&1 | grep -E '(blocked|success|completed)' | wc -l" 2>/dev/null || echo "0")
         errors=$(ssh Cinnamon "docker logs $container --since='24h' 2>&1 | grep -E '(403|error|failed)' | wc -l" 2>/dev/null || echo "0")
         
-        # 改行・空白文字の除去
+        # Strip newlines and whitespace
         processed=$(echo "$processed" | tr -d '\n\r ')
         errors=$(echo "$errors" | tr -d '\n\r ')
         
-        # 数値でない場合は0に設定
+        # Default non-numeric values to 0
         [[ ! "$processed" =~ ^[0-9]+$ ]] && processed=0
         [[ ! "$errors" =~ ^[0-9]+$ ]] && errors=0
         
         total_processed[$account]=$processed
         total_errors[$account]=$errors
         
-        # 成功率計算
+        # Success rate
         if [ "$processed" -gt 0 ]; then
             success_rate=$(( (processed - errors) * 100 / processed ))
         else
@@ -77,17 +76,17 @@ collect_current_metrics() {
         total_errors_all=$((total_errors_all + errors))
     done
     
-    # 全体成功率
+    # Overall success rate
     if [ "$total_processed_all" -gt 0 ]; then
         overall_success_rate=$(( (total_processed_all - total_errors_all) * 100 / total_processed_all ))
     else
         overall_success_rate=0
     fi
     
-    # 処理速度推定（24時間での処理数から算出）
+    # Estimated processing rate (from 24h count)
     processing_speed=$(( total_processed_all / 24 ))
     
-    # JSONフォーマットで現在の指標を作成（配列要素の存在確認付き）
+    # Build current metrics as JSON (checks array element existence)
     current_metrics=$(cat <<EOF
 {
   "timestamp": "$CURRENT_TIMESTAMP",
@@ -110,7 +109,7 @@ EOF
     echo "$current_metrics"
 }
 
-# パフォーマンス指標を表示
+# Print metrics
 display_current_metrics() {
     local metrics="$1"
     
@@ -143,7 +142,7 @@ display_current_metrics() {
     fi
 }
 
-# 履歴比較分析
+# History comparison
 compare_with_history() {
     local current_metrics="$1"
     
@@ -152,7 +151,7 @@ compare_with_history() {
         return
     fi
     
-    # 最新の履歴データを取得
+    # Latest history entry
     last_metrics=$(tail -1 "$PERF_HISTORY" 2>/dev/null || echo "{}")
     
     if [ "$last_metrics" = "{}" ]; then
@@ -167,20 +166,20 @@ compare_with_history() {
         echo "📈 前回比較:"
     fi
     
-    # 前回データ取得
+    # Previous entry
     last_timestamp=$(echo "$last_metrics" | jq -r '.timestamp // "Unknown"')
     last_processed=$(echo "$last_metrics" | jq -r '.total_processed // 0')
     last_errors=$(echo "$last_metrics" | jq -r '.total_errors // 0')
     last_success_rate=$(echo "$last_metrics" | jq -r '.overall_success_rate // 0')
     last_speed=$(echo "$last_metrics" | jq -r '.processing_speed_per_hour // 0')
     
-    # 現在データ取得
+    # Current entry
     curr_processed=$(echo "$current_metrics" | jq -r '.total_processed')
     curr_errors=$(echo "$current_metrics" | jq -r '.total_errors')
     curr_success_rate=$(echo "$current_metrics" | jq -r '.overall_success_rate')
     curr_speed=$(echo "$current_metrics" | jq -r '.processing_speed_per_hour')
     
-    # 変化率計算
+    # Rate of change
     if [ "$last_processed" -gt 0 ]; then
         processed_change=$(( (curr_processed - last_processed) * 100 / last_processed ))
     else
@@ -213,7 +212,7 @@ compare_with_history() {
         echo "  成功率変化: ${success_rate_change:+}${success_rate_change}% (${last_success_rate}% → ${curr_success_rate}%)"
         echo "  処理速度変化: ${speed_change:+}${speed_change}% (${last_speed} → ${curr_speed} 件/時)"
         
-        # トレンド判定
+        # Trend classification
         echo ""
         echo "📊 パフォーマンストレンド判定:"
         if [ "$success_rate_change" -gt 5 ]; then
@@ -242,7 +241,7 @@ compare_with_history() {
     fi
 }
 
-# メイン処理
+# Main
 current_metrics=$(collect_current_metrics)
 display_current_metrics "$current_metrics"
 
@@ -250,10 +249,10 @@ if [ "$COMPARE" = true ]; then
     compare_with_history "$current_metrics"
 fi
 
-# 履歴にデータを追加（最大100件保持）
+# Append to history
 echo "$current_metrics" >> "$PERF_HISTORY"
 
-# 履歴ファイルサイズ制限（最新100件のみ保持）
+# Trim the history file to the latest 100 entries
 if [ -f "$PERF_HISTORY" ]; then
     tail -100 "$PERF_HISTORY" > "${PERF_HISTORY}.tmp" && mv "${PERF_HISTORY}.tmp" "$PERF_HISTORY"
 fi

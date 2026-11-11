@@ -1,12 +1,11 @@
 #!/bin/bash
 
-# check-cinnamon-errors - 403エラー分析専用モジュール
+# check-cinnamon-errors - 403 error analysis
 
 set -e
 
 BRIEF=false
 
-# オプション解析
 while [[ $# -gt 0 ]]; do
     case $1 in
         --brief|-b)
@@ -24,7 +23,6 @@ if [ "$BRIEF" = false ]; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 fi
 
-# 403エラー分析
 CONTAINERS="bulk-block-users-book000-1 bulk-block-users-ihc_amot-1 bulk-block-users-book000_vrc-1 bulk-block-users-authorizedkey-1 bulk-block-users-tomachi_priv-1 bulk-block-users-tomarabbit-1"
 
 TOTAL_ERRORS=0
@@ -35,17 +33,17 @@ MEDIUM_SERVICES=""
 for container in $CONTAINERS; do
     service=$(echo $container | cut -d- -f4)
     
-    # 10分間の403エラー数（正確なパターンマッチング）
+    # 403 count, last 10 minutes
     count_10m=$(ssh Cinnamon "docker logs $container --since='10m' 2>&1 | grep -E '(🚨.*403エラー.*回検出|403 Forbidden|HTTP/1.1 403)' | wc -l")
     
-    # 30分間の403エラー数（詳細モードのみ）
+    # 403 count, last 30 minutes (detailed mode only)
     if [ "$BRIEF" = false ]; then
         count_30m=$(ssh Cinnamon "docker logs $container --since='30m' 2>&1 | grep -E '(🚨.*403エラー.*回検出|403 Forbidden|HTTP/1.1 403)' | wc -l")
     fi
     
     TOTAL_ERRORS=$((TOTAL_ERRORS + count_10m))
     
-    # 重要度判定
+    # severity
     if [ $count_10m -ge 50 ]; then
         priority="🚨 CRITICAL"
         CRITICAL_SERVICES="$CRITICAL_SERVICES $service"
@@ -67,7 +65,7 @@ for container in $CONTAINERS; do
         echo "    - 直近30分: $count_30m件の403エラー"
         echo "    - ⚠️ 重要度: $priority"
         
-        # エラーサンプル（CRITICALとHIGHのみ）
+        # error samples (CRITICAL and HIGH only)
         if [ $count_10m -ge 20 ]; then
             echo "    - 🔍 最新エラーサンプル:"
             ssh Cinnamon "docker logs $container --since='5m' 2>&1 | grep '403' | tail -3 | sed 's/^/      → /'"
@@ -76,7 +74,7 @@ for container in $CONTAINERS; do
     fi
 done
 
-# サマリー
+# summary
 if [ "$BRIEF" = true ]; then
     echo ""
     echo "📈 総403エラー: $TOTAL_ERRORS件/10分"
@@ -95,7 +93,7 @@ else
     fi
 fi
 
-# 推奨アクション（詳細モードのみ）
+# recommended actions (detailed mode only)
 if [ "$BRIEF" = false ]; then
     echo ""
     echo "🛠️ 緊急推奨事項:"

@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# check-cinnamon-version - バージョン情報分析専用モジュール
+# check-cinnamon-version - version information analysis
 
 set -e
 
 BRIEF=false
 
-# オプション解析
+# Parse options
 while [[ $# -gt 0 ]]; do
     case $1 in
         --brief|-b)
@@ -24,7 +24,7 @@ if [ "$BRIEF" = false ]; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 fi
 
-# 稼働中のコンテナからバージョン情報を取得
+# Version info from running containers
 RUNNING_CONTAINER=$(ssh Cinnamon "docker ps --filter 'name=bulk-block-users' --format '{{.Names}}' | head -1")
 
 if [ -n "$RUNNING_CONTAINER" ]; then
@@ -34,7 +34,7 @@ if [ -n "$RUNNING_CONTAINER" ]; then
         echo "🏃 稼働中コンテナでのバージョン:"
     fi
     
-    # --versionオプションを試行
+    # Try --version option
     RUNNING_VERSION=$(ssh Cinnamon "docker exec $RUNNING_CONTAINER python3 -m twitter_blocker --version 2>/dev/null" | sed 's/^python3 -m twitter_blocker //' | head -1)
     
     if [ -n "$RUNNING_VERSION" ]; then
@@ -62,7 +62,7 @@ if [ "$BRIEF" = false ]; then
     echo ""
 fi
 
-# GitHub最新リリース情報を取得
+# Latest GitHub release
 if [ "$BRIEF" = true ]; then
     echo "🏷️ 最新リリース:"
 else
@@ -83,9 +83,9 @@ if [ -n "$LATEST_RELEASE" ] && [ "$LATEST_RELEASE" != "null" ]; then
         echo "  Latest: $LATEST_RELEASE"
     fi
     
-    # バージョン比較（プレフィックス正規化）
+    # Compare versions (normalize prefix)
     if [ -n "$RUNNING_VERSION" ] && [ "$RUNNING_VERSION" != "Legacy/Unknown" ]; then
-        # プレフィックス "v" を除去して比較
+        # Strip the "v" prefix before comparing
         NORMALIZED_RUNNING=$(echo "$RUNNING_VERSION" | sed 's/^v//')
         NORMALIZED_LATEST=$(echo "$LATEST_RELEASE" | sed 's/^v//')
         
@@ -104,12 +104,12 @@ else
     echo "  ❌ GitHub API取得失敗"
 fi
 
-# 最新イメージのバージョン（詳細モードのみ）
+# Latest image version (verbose mode only)
 if [ "$BRIEF" = false ]; then
     echo ""
     echo "📦 最新イメージのバージョン:"
     
-    # ghcr.ioから最新イメージのタグを取得（簡略化）
+    # Latest image tag from ghcr.io (simplified)
     LATEST_IMAGE_TAG=$(ssh Cinnamon "docker image ls ghcr.io/book000/twitter-bulk-blocker --format '{{.Tag}}' | grep -v '<none>' | head -1" 2>/dev/null || echo "Unknown")
     
     if [ "$LATEST_IMAGE_TAG" != "Unknown" ]; then

@@ -1,70 +1,17 @@
-指定された機能の包括的テストを実行し、品質と動作を保証します。
+Test the given feature before it is merged.
 
-テスト対象機能: $ARGUMENTS
+Feature: $ARGUMENTS
 
-### 🧪 Phase 1: コード品質検証
-**構文・型チェック**:
-1. Python構文チェック: `python3 -m py_compile twitter_blocker/*.py`
-2. 型チェック（mypy利用可能時）
-3. インポート依存関係の確認
-4. コーディング規約の準拠確認
+The repository has no committed test suite, so verification is a syntax check plus runs of the CLI.
+Do not report tests as passing unless you ran them.
 
-**静的解析**:
-1. 潜在的バグの検出
-2. セキュリティ脆弱性の確認
-3. パフォーマンス問題の早期発見
-4. 保守性指標の評価
+1. Syntax: `python3 -m py_compile twitter_blocker/*.py`.
+2. Static checks: run `mypy`, `flake8` or `black --check` only if they are installed, and say so if they are not.
+3. Functional run with the real API (needs `cookies.json` and a users file):
+   - single user: `python3 -m twitter_blocker --test-user <name> --debug`
+   - small batch: `python3 -m twitter_blocker` (without `--all` it processes only the first 5 users); with `--all`, `--max-users N` caps the run; both perform real blocks for the processed users, so use a throwaway users file
+   - statistics: `python3 -m twitter_blocker --stats`
+4. For the changed code path, exercise normal, error and boundary cases (for example suspended, not-found and protected accounts, and a rate-limit response) and read the log output.
+5. Use a scratch copy of the database and cache (`--db` / `TWITTER_BLOCK_DB`, `--cache-dir` / `CACHE_DIR`) so production data is untouched, and delete it afterwards.
 
-### 🎯 Phase 2: 機能テスト
-**単体テスト**:
-1. 機能固有のテストケース作成
-2. 正常系・異常系・境界値テスト
-3. モック使用による外部依存の分離
-4. カバレッジ測定
-
-**統合テスト**:
-1. モジュール間連携の確認
-2. データフローの検証
-3. API連携の動作確認
-4. データベース操作の整合性
-
-### ⚡ Phase 3: パフォーマンステスト
-**処理性能測定**:
-1. 実行時間の測定
-2. メモリ使用量の監視
-3. スループット測定（該当機能）
-4. レスポンス時間の評価
-
-**負荷テスト** (該当機能):
-1. 大量データでの動作確認
-2. 並行処理時の安定性
-3. リソース制限下での動作
-4. エラー復旧能力の確認
-
-### 🔧 Phase 4: 実環境テスト
-**開発環境での動作確認**:
-1. 実際のTwitter APIを使用したテスト
-2. キャッシュ機能の動作確認
-3. エラーハンドリングの検証
-4. ログ出力の確認
-
-**クリーンアップ**:
-1. テスト用一時ファイルの削除
-2. テストデータベースのクリア
-3. キャッシュの初期化
-4. 環境の原状復帰
-
-### 📋 テスト結果報告
-1. **PASS/FAIL判定**: 明確な合格基準
-2. **パフォーマンス指標**: 数値での性能評価
-3. **発見された問題**: 詳細な問題報告
-4. **改善提案**: 具体的な修正案
-
-### 🎯 成功基準
-- 全ユニットテスト通過
-- 統合テスト完了
-- パフォーマンス基準達成（50件/秒以上）
-- メモリリーク無し
-- セキュリティ問題無し
-
-注意: テスト実行後、作成された一時ファイルは自動的に削除されます。
+Report PASS/FAIL per check with the command and its output, any problems found, and suggested fixes.

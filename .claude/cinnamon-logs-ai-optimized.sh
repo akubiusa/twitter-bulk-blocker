@@ -1,6 +1,5 @@
 #!/bin/bash
-# Cinnamonサーバー ログ調査スクリプト - Claude Code check-cinnamon 最適化版
-# 生成AIによる分析とコード修正のための構造化出力
+# Structured log investigation for the Cinnamon production host, meant to be parsed by an LLM.
 
 set -e
 
@@ -13,7 +12,7 @@ echo "ANALYSIS_TYPE: comprehensive_check"
 echo "==="
 echo
 
-# 出力を構造化するためのヘルパー関数
+# Output helpers
 output_section() {
     local section_name="$1"
     echo "SECTION_START: $section_name"
@@ -41,10 +40,10 @@ output_finding() {
     fi
 }
 
-# 1. システム状態確認
+# 1. System state
 output_section "SYSTEM_STATUS"
 
-# コンテナ状態の詳細分析
+# Container state
 container_data=$(ssh Cinnamon "cd $CINNAMON_PATH && docker compose ps --format '{{.Service}}\t{{.State}}\t{{.Health}}\t{{.Status}}'" 2>/dev/null)
 
 if [ -z "$container_data" ]; then
@@ -99,13 +98,13 @@ fi
 
 output_section_end "SYSTEM_STATUS"
 
-# 2. エラー分析
+# 2. Errors
 output_section "ERROR_ANALYSIS"
 
-# 詳細ログ取得（他のセクションでも使用）
+# Fetch logs once; reused by later sections
 detailed_logs=$(ssh Cinnamon "cd $CINNAMON_PATH && docker compose logs --tail 1000" 2>/dev/null)
 
-# 最新エラー統計（過去1000行）
+# Error counts (over the fetched log tail)
 error_stats=$(echo "$detailed_logs" | grep -E '(エラー|ERROR|failed|401|403|429|500)' | sort | uniq -c | sort -nr | head -10)
 
 if [ -n "$error_stats" ]; then
@@ -113,7 +112,7 @@ if [ -n "$error_stats" ]; then
     echo "$error_stats"
     echo "ERROR_ANALYSIS:"
     
-    # エラーパターンの分析（安全な整数変換）
+    # Error patterns (safe integer conversion)
     auth_errors=$(echo "$error_stats" | grep -E "(認証|401|Authentication)" | head -1 | awk '{print $1}' | tr -d '\n\r' || echo "0")
     auth_errors=${auth_errors:-0}
     forbidden_errors=$(echo "$error_stats" | grep -E "(403|Forbidden)" | head -1 | awk '{print $1}' | tr -d '\n\r' || echo "0")
@@ -128,7 +127,7 @@ if [ -n "$error_stats" ]; then
     echo "  RATE_LIMIT_ERRORS: $rate_limit_errors"
     echo "  BATCH_ERRORS: $batch_errors"
     
-    # 重要度判定（安全な整数比較）
+    # Severity (safe integer comparison)
     if [ "${auth_errors:-0}" -gt 20 ] 2>/dev/null; then
         output_finding "CRITICAL" "AUTH" "High authentication error rate" \
             "$auth_errors authentication errors detected" \
@@ -162,7 +161,7 @@ fi
 
 output_section_end "ERROR_ANALYSIS"
 
-# 3. 認証状態詳細
+# 3. Authentication
 output_section "AUTHENTICATION_STATUS"
 
 auth_details=$(ssh Cinnamon "cd $CINNAMON_PATH && docker compose logs --tail 200 | grep -A2 -B2 '認証エラー\|Authentication.*failed\|401\|Could not authenticate'" 2>/dev/null)
@@ -171,7 +170,7 @@ if [ -n "$auth_details" ]; then
     echo "AUTHENTICATION_ERRORS_DETAIL:"
     echo "$auth_details" | tail -10
     
-    # サービス別認証エラー分析
+    # Per-service authentication errors
     echo "SERVICE_AUTH_ANALYSIS:"
     for service in book000 book000_vrc ihc_amot tomachi_priv authorizedkey tomarabbit; do
         service_auth_errors=$(echo "$auth_details" | grep -c "${service}-1" 2>/dev/null || echo "0")
@@ -194,17 +193,17 @@ fi
 
 output_section_end "AUTHENTICATION_STATUS"
 
-# 4. パフォーマンス分析
+# 4. Performance
 output_section "PERFORMANCE_ANALYSIS"
 
-# レートリミット状況
+# Rate limit lines
 rate_limit_status=$(ssh Cinnamon "cd $CINNAMON_PATH && docker compose logs --tail 100 | grep -E 'Rate Limit:.*Reset Time' | tail -5" 2>/dev/null)
 
 if [ -n "$rate_limit_status" ]; then
     echo "RATE_LIMIT_STATUS:"
     echo "$rate_limit_status"
     
-    # レートリミット使用率分析
+    # Rate limit usage
     echo "RATE_LIMIT_ANALYSIS:"
     while read -r line; do
         if echo "$line" | grep -q "Rate Limit:"; then
@@ -235,7 +234,7 @@ else
     output_finding "INFO" "RATE_LIMIT" "No recent rate limit data available"
 fi
 
-# 処理速度分析
+# Processing speed
 recent_blocks=$(ssh Cinnamon "cd $CINNAMON_PATH && docker compose logs --since '5m' | grep -c 'ブロック成功'" 2>/dev/null || echo "0")
 recent_progress=$(ssh Cinnamon "cd $CINNAMON_PATH && docker compose logs --since '10m' | grep '進捗.*完了.*ブロック.*スキップ.*エラー' | tail -3" 2>/dev/null)
 
@@ -262,7 +261,7 @@ fi
 
 output_section_end "PERFORMANCE_ANALYSIS"
 
-# 5. サービス個別統計
+# 5. Per-service stats
 output_section "SERVICE_STATISTICS"
 
 services=(book000 book000_vrc ihc_amot tomachi_priv authorizedkey tomarabbit)
@@ -271,7 +270,7 @@ echo "SERVICE_INDIVIDUAL_ANALYSIS:"
 for service in "${services[@]}"; do
     echo "  SERVICE_START: $service"
     
-    # サービス固有の統計
+    # Service-specific stats
     service_errors=$(ssh Cinnamon "cd $CINNAMON_PATH && docker compose logs $service --tail 100 | grep -c 'エラー\|ERROR\|failed'" 2>/dev/null || echo "0")
     service_errors=${service_errors:-0}
     service_blocks=$(ssh Cinnamon "cd $CINNAMON_PATH && docker compose logs $service --tail 100 | grep -c 'ブロック成功'" 2>/dev/null || echo "0")
@@ -283,13 +282,13 @@ for service in "${services[@]}"; do
     echo "    BLOCKS: $service_blocks"
     echo "    AUTH_ERRORS: $service_auth_errors"
     
-    # 最新ログの状態
+    # Latest log state
     latest_activity=$(ssh Cinnamon "cd $CINNAMON_PATH && docker compose logs $service --tail 20 | grep -E '(ブロック|スキップ|エラー)' | tail -1" 2>/dev/null)
     if [ -n "$latest_activity" ]; then
         echo "    LATEST_ACTIVITY: $latest_activity"
     fi
     
-    # サービス状態判定（安全な整数比較）
+    # Service state (safe integer comparison)
     if [ "${service_auth_errors:-0}" -gt 3 ] 2>/dev/null; then
         output_finding "CRITICAL" "SERVICE" "Service $service authentication issues" \
             "$service_auth_errors auth errors detected" \
@@ -308,7 +307,7 @@ done
 
 output_section_end "SERVICE_STATISTICS"
 
-# 6. 最新統計サマリー
+# 6. Latest stats summary
 output_section "STATISTICS_SUMMARY"
 
 stats_data=$(ssh Cinnamon "cd $CINNAMON_PATH && docker compose logs --tail 200 | grep -A15 '=== 処理統計 ===' | tail -15" 2>/dev/null)
@@ -317,7 +316,7 @@ if [ -n "$stats_data" ]; then
     echo "PROCESSING_STATISTICS:"
     echo "$stats_data"
     
-    # 処理状況の抽出
+    # Extract progress
     total_users=$(echo "$stats_data" | grep "全対象ユーザー:" | grep -o '[0-9,]*人' | tr -d ',人' || echo "0")
     blocked_users=$(echo "$stats_data" | grep "ブロック済み:" | grep -o '[0-9,]*人' | tr -d ',人' || echo "0")
     remaining_users=$(echo "$stats_data" | grep "残り未処理:" | grep -o '[0-9,]*人' | tr -d ',人' || echo "0")
@@ -351,12 +350,12 @@ fi
 
 output_section_end "STATISTICS_SUMMARY"
 
-# 7. コード問題特定・改善提案
+# 7. Code problems and suggested fixes
 output_section "CODE_ANALYSIS_RECOMMENDATIONS"
 
 echo "CODE_ISSUE_ANALYSIS:"
 
-# KeyErrorの詳細分析
+# KeyError analysis
 keyerror_count=$(echo "$detailed_logs" | grep -c "KeyError.*error_message" 2>/dev/null || echo "0")
 keyerror_count=$(echo "$keyerror_count" | tr -d '\n\r' | grep -o '[0-9]*' | head -1)
 [ -z "$keyerror_count" ] && keyerror_count=0
@@ -372,7 +371,7 @@ if [ "$keyerror_count" -gt 0 ]; then
     echo "    PRIORITY: IMMEDIATE"
 fi
 
-# 認証問題分析
+# Authentication problems
 for service in book000 book000_vrc ihc_amot tomachi_priv authorizedkey tomarabbit; do
     service_auth_count=$(echo "$detailed_logs" | grep -c "${service}-1.*認証エラー\|${service}-1.*401" 2>/dev/null || echo "0")
     service_auth_count=$(echo "$service_auth_count" | tr -d '\n\r' | grep -o '[0-9]*' | head -1)
@@ -388,7 +387,7 @@ for service in book000 book000_vrc ihc_amot tomachi_priv authorizedkey tomarabbi
     fi
 done
 
-# パフォーマンス問題分析
+# Performance problems
 for service in book000 book000_vrc ihc_amot tomachi_priv authorizedkey tomarabbit; do
     service_blocks=$(echo "$detailed_logs" | grep -c "${service}-1.*ブロック成功" 2>/dev/null || echo "0")
     service_errors=$(echo "$detailed_logs" | grep -c "${service}-1.*エラー\|${service}-1.*ERROR" 2>/dev/null || echo "0")
@@ -410,7 +409,7 @@ for service in book000 book000_vrc ihc_amot tomachi_priv authorizedkey tomarabbi
     fi
 done
 
-# バッチ処理効率分析
+# Batch efficiency
 batch_error_patterns=$(echo "$detailed_logs" | grep -E "バッチ処理エラー|batch.*error" | tail -5)
 if [ -n "$batch_error_patterns" ]; then
     echo "  ISSUE: Batch_processing_inefficiency"
@@ -423,7 +422,7 @@ fi
 
 echo "IMPROVEMENT_RECOMMENDATIONS:"
 
-# 緊急修正リスト
+# Urgent fixes
 echo "  IMMEDIATE_FIXES_REQUIRED:"
 if [ "$keyerror_count" -gt 0 ]; then
     echo "    1. Fix KeyError in manager.py failure_info handling"
@@ -432,7 +431,7 @@ if [ "$keyerror_count" -gt 0 ]; then
     echo "       - Change: Add 'if failure_info else default' checks"
 fi
 
-# 高優先度修正
+# High-priority fixes
 echo "  HIGH_PRIORITY_FIXES:"
 auth_issues_found=false
 for service in book000 book000_vrc ihc_amot tomachi_priv authorizedkey tomarabbit; do
@@ -448,7 +447,7 @@ for service in book000 book000_vrc ihc_amot tomachi_priv authorizedkey tomarabbi
     fi
 done
 
-# 中優先度改善
+# Medium-priority improvements
 echo "  MEDIUM_PRIORITY_IMPROVEMENTS:"
 perf_issues_found=false
 for service in book000 book000_vrc ihc_amot tomachi_priv authorizedkey tomarabbit; do
@@ -469,7 +468,7 @@ for service in book000 book000_vrc ihc_amot tomachi_priv authorizedkey tomarabbi
     fi
 done
 
-# システム最適化提案
+# Optimization suggestions
 echo "  OPTIMIZATION_SUGGESTIONS:"
 echo "    1. Implement better error handling in batch processing"
 echo "    2. Add monitoring for cookie expiration"
@@ -478,16 +477,16 @@ echo "    4. Consider implementing circuit breaker pattern for failing services"
 
 output_section_end "CODE_ANALYSIS_RECOMMENDATIONS"
 
-# 8. 総合判定
+# 8. Overall assessment
 output_section "OVERALL_ASSESSMENT"
 
 echo "ASSESSMENT_SUMMARY:"
 
-# 重要な問題の集計
+# Count critical problems
 critical_issues=0
 warning_issues=0
 
-# コンテナ問題
+# Container problems
 if [ "${running_containers:-0}" -lt "${total_containers:-1}" ]; then
     if [ "${running_containers:-0}" -eq 0 ]; then
         ((critical_issues++))
@@ -496,19 +495,19 @@ if [ "${running_containers:-0}" -lt "${total_containers:-1}" ]; then
     fi
 fi
 
-# 認証問題
+# Authentication problems
 if [ "${auth_errors:-0}" -gt 20 ]; then
     ((critical_issues++))
 elif [ "${auth_errors:-0}" -gt 5 ]; then
     ((warning_issues++))
 fi
 
-# バッチエラー
+# Batch errors
 if [ "${batch_errors:-0}" -gt 0 ]; then
     ((critical_issues++))
 fi
 
-# 処理停滞
+# Stalled processing
 if [ "${recent_blocks:-0}" -eq 0 ]; then
     ((critical_issues++))
 elif [ "${recent_blocks:-0}" -lt 5 ]; then
@@ -539,7 +538,7 @@ else
         "Continue normal operations"
 fi
 
-# 改善のための推奨アクション
+# Recommended actions
 echo "RECOMMENDED_ACTIONS:"
 echo "  IMMEDIATE:"
 if [ "${critical_issues:-0}" -gt 0 ] 2>/dev/null; then
@@ -555,7 +554,7 @@ echo "    - Consider service load balancing"
 
 output_section_end "OVERALL_ASSESSMENT"
 
-# 9. 分析メタデータ
+# 9. Analysis metadata
 output_section "ANALYSIS_METADATA"
 
 echo "ANALYSIS_SUMMARY:"

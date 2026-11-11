@@ -1,139 +1,56 @@
-# Twitter API操作パターン詳細
+# Twitter/X API Patterns
 
-## 必須Cookie認証
-```python
-REQUIRED_COOKIES = {
-    "ct0": "32文字のCSRFトークン",
-    "auth_token": "40文字のセッショントークン", 
-    "twid": "u%3D1234567890",  # 任意
-}
+Reference for how `twitter_blocker/api.py` talks to X. Verified against the code in `TwitterAPI` and `HeaderEnhancer`.
 
-# 認証状態確認
-def verify_auth():
-    cookies = self.cookie_manager.load_cookies()
-    return 'ct0' in cookies and 'auth_token' in cookies
-```
+## Authentication
 
-## GraphQL APIエンドポイント
-```python
-ENDPOINTS = {
-    "UserByScreenName": "qW5u-DAuXpMEG0zA1F7UGQ/UserByScreenName",
-    "UserByRestId": "I5nvpI91ljifos1Y3Lltyg/UserByRestId",
-    "UsersByRestIds": "OXBEDLUtUvKvNEP1RKRbuQ/UsersByRestIds",  # バッチ用
-}
+- Cookies are read from the JSON export by `CookieManager.load_cookies()` (only `.x.com`, `.twitter.com`, `x.com`, `twitter.com` domains are kept).
+- `ct0` is sent as `x-csrf-token`; `auth_token` is sent as `x-twitter-auth-token` when present.
+- `twid` (format `u%3D<numeric id>`) is used only to derive the login user ID that keys the relationship cache.
+  Fallbacks: an md5 prefix of `personalization_id`/`guest_id`, then `"default_user"`.
+- `CookieManager` re-reads the file when its mtime changes or after `min(cache_duration, 30)` seconds, so cookies refreshed externally are picked up while the tool runs.
 
-# フィーチャーフラグ（定期更新必要）
-FEATURES = {
-    "hidden_profile_likes_enabled": True,
-    "rweb_tipjar_consumption_enabled": True,
-    "responsive_web_graphql_exclude_directive_enabled": True,
-    # 他約10個...定期的にTwitterの仕様変更をチェック
-}
+## Endpoints
 
-# 拡張ヘッダー（Issue #38対応）
-class HeaderEnhancer:
-    """Twitter API用の拡張ヘッダー生成クラス"""
-    
-    def __init__(self, enable_forwarded_for: bool = False):
-        self.enable_forwarded_for = enable_forwarded_for
-        self._transaction_counter = random.randint(1000, 9999)
-        self._session_ip = self._generate_session_ip() if enable_forwarded_for else None
-    
-    def get_enhanced_headers(self) -> Dict[str, str]:
-        """拡張ヘッダーを取得"""
-        headers = {
-            "x-client-transaction-id": str(self._transaction_counter)
-        }
-        
-        if self.enable_forwarded_for and self._session_ip:
-            headers["x-xp-forwarded-for"] = self._session_ip
-            
-        self._transaction_counter += 1
-        return headers
+| Constant | Endpoint |
+|---|---|
+| `USER_BY_SCREEN_NAME_ENDPOINT` | GraphQL `UserByScreenName` |
+| `USER_BY_REST_ID_ENDPOINT` | GraphQL `UserByRestId` |
+| `USERS_BY_REST_IDS_ENDPOINT` | GraphQL `UsersByRestIds` (batch lookup, 50 IDs per request by default) |
+| `BLOCKS_CREATE_ENDPOINT` | REST `1.1/blocks/create.json` |
 
-# Twitter APIでの使用
-api = TwitterAPI(
-    enable_header_enhancement=True,    # x-client-transaction-id有効
-    enable_forwarded_for=False         # x-xp-forwarded-for無効（デフォルト）
-)
-```
+- GraphQL query IDs and the feature-flag dict (`_get_graphql_features()`) mirror what the X web client sends and change when X changes its web app.
+  When lookups start failing with 4xx errors that are not auth or rate-limit related, compare both against the current web client first.
+- Lookups by screen name are sequential (`_fetch_screen_names_batch` sleeps 0.1 s between requests); only user-ID lookups use the real batch endpoint.
 
-## レート制限管理（精密）
-```python
-RATE_LIMITS = {
-    "UserByScreenName": {"requests": 150, "window": 900},
-    "UsersByRestIds": {"requests": 150, "window": 900}, 
-    "blocks/create": {"requests": 300, "window": 900},
-}
+## Extra request headers
 
-def _calculate_wait_time(self, response):
-    reset_timestamp = response.headers.get('x-rate-limit-reset')
-    if reset_timestamp:
-        wait_seconds = max(int(reset_timestamp) - int(time.time()), 0)
-        return max(60, min(wait_seconds + 10, 900))  # 60秒〜15分
-    return 300  # デフォルト5分
-```
+`HeaderEnhancer` adds `x-client-transaction-id` (incrementing counter), `x-client-uuid` and `x-request-id` to GraphQL and REST requests.
+`x-xp-forwarded-for` (a synthetic IP) is added only with forwarded-for enabled.
+Without the enhancer, GraphQL requests send `x-client-transaction-id: 0`.
 
-## エラーレスポンス完全マッピング
-```python
-# 永続的失敗（API呼び出し禁止）
-PERMANENT_ERRORS = {
-    "suspended": "アカウント凍結",
-    "not_found": "ユーザー削除済み", 
-    "deactivated": "アカウント無効化",
-}
+| Setting | Default | CLI flag |
+|---|---|---|
+| `enable_header_enhancement` | `True` | `--disable-header-enhancement` turns it off |
+| `enable_forwarded_for` | `False` | `--enable-forwarded-for` turns it on (experimental) |
 
-# 一時的失敗（リトライ対象）
-TEMPORARY_ERRORS = {
-    "unavailable": "一時的利用不可",
-    429: "レート制限",
-    500: "サーバーエラー",
-    502: "Bad Gateway",
-    503: "Service Unavailable",
-}
+`HeaderEnhancer` tracks success rates over the last 10 minutes and reports `use_basic` when the quality score falls below 0.4 (after at least 20 requests).
+This is advisory: `get_comprehensive_error_analysis()` surfaces it as a recommendation, and requests keep using the configured headers.
 
-# 認証エラー処理
-def handle_auth_error(self):
-    self._login_user_id = None
-    self.cookie_manager.clear_cache()
-    time.sleep(2)
-    # 1回だけ再試行
-```
+## Rate limits (429)
 
-## バッチ処理パターン（必須）
-```python
-# ✅ 推奨: バッチAPI使用
-def get_users_batch(self, user_ids, batch_size=50):
-    results = {}
-    for i in range(0, len(user_ids), batch_size):
-        batch = user_ids[i:i + batch_size]
-        batch_results = self._fetch_users_batch(batch)
-        results.update(batch_results)
-        time.sleep(1)  # レート制限対策
-    return results
+`_calculate_wait_time()` waits until `x-rate-limit-reset` plus 10 s, clamped to 60-900 s, and falls back to 300 s when the header is missing or unparsable.
+Each request method sleeps that long and retries once.
 
-# ❌ 避ける: 個別API呼び出し
-def get_users_individually(self, user_ids):  # N+1問題
-    for user_id in user_ids:
-        self.get_user_info_by_id(user_id)
-```
+## Auth and account-lock errors
 
-## キャッシュアクセスパターン
-```python
-# 段階的フォールバック戦略
-def get_user_info_optimized(self, screen_name):
-    # 1. フルキャッシュ確認
-    if user_id := self._get_lookup_from_cache(screen_name):
-        if combined := self._combine_profile_and_relationship(user_id):
-            return combined
-    
-    # 2. 部分キャッシュ + 最小API
-    if user_id:
-        # 関係情報のみAPI取得
-        relationships = self._fetch_relationships_only(user_id)
-        profile = self._get_profile_from_cache(user_id)
-        return self._combine_data(profile, relationships)
-    
-    # 3. フルAPI取得（最終手段）
-    return self.get_user_info(screen_name)
-```
+- 401: `_handle_auth_error()` waits for the cookie file's mtime to change (first retry up to 1 hour, later retries up to 30 s), clears the cookie cache, backs off with jitter, then retries.
+  After `_max_auth_retries` (10) failed retries it raises `SystemExit`.
+- 403 with a "locked account" message (`_is_account_locked()`): `_handle_account_lock_error()`, same retry budget.
+- 403 otherwise: classified by `ErrorClassifier` and counted; 20 accumulated 403s force a cookie reload and a 30-minute pause.
+  Details are in `error-handling.md`.
+
+## Batching and caching
+
+- Use `get_users_info_batch(user_ids, batch_size=50)` for ID lookups and `get_users_info_by_screen_names()` for screen names; avoid looping over `get_user_info_by_id()`.
+- Lookups check the three caches first (see `caching-strategy.md`); only uncached users hit the API.

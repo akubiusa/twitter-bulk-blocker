@@ -1,12 +1,8 @@
 #!/bin/bash
 
-# monitor-releases - GitHub新規リリース監視と自動アクション実行
+# monitor-releases - poll the GitHub API for new releases and optionally update on detection
 #
-# 機能:
-# - GitHub APIで新規リリースを継続監視
-# - 新しいリリース検出時の自動アクション実行
-# - ログ記録とアラート機能
-# - カスタマイズ可能な監視間隔と動作設定
+# Logs every check; with --auto-update, runs docker compose down and waits for the redeploy.
 
 set -e
 
@@ -14,20 +10,20 @@ echo "=== GITHUB RELEASE MONITORING SYSTEM ==="
 echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
 echo
 
-# 設定
+# Settings
 GITHUB_REPO="book000/twitter-bulk-blocker"
 GITHUB_API_URL="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
 STATE_FILE="/tmp/twitter-bulk-blocker-release-monitor.state"
 LOG_FILE="/tmp/twitter-bulk-blocker-release-monitor.log"
 
-# デフォルト設定
-CHECK_INTERVAL=300  # 5分間隔
-MAX_DURATION=3600   # 1時間で終了
-AUTO_UPDATE=false   # 自動更新を実行するか
-DRY_RUN=false      # テストモード
-VERBOSE=false      # 詳細ログ
-ALERT_ONLY=false   # アラートのみ（更新実行なし）
-ONE_SHOT=false     # 1回だけ実行
+# Defaults
+CHECK_INTERVAL=300  # 5 minutes
+MAX_DURATION=3600   # stop after 1 hour
+AUTO_UPDATE=false   # run the update on detection
+DRY_RUN=false      # test mode
+VERBOSE=false      # verbose logging
+ALERT_ONLY=false   # alert only, no update
+ONE_SHOT=false     # run once
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -98,7 +94,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ログ関数
+# Logging
 log_message() {
     local level="$1"
     local message="$2"
@@ -113,7 +109,7 @@ log_message() {
     fi
 }
 
-# 現在のリリース情報を取得
+# Fetch the latest release info
 get_current_release() {
     local api_response=$(timeout 30 curl -s "$GITHUB_API_URL" 2>/dev/null || echo "")
     
@@ -134,7 +130,7 @@ get_current_release() {
     return 0
 }
 
-# 状態ファイルの読み込み
+# Load the state file
 load_state() {
     if [ -f "$STATE_FILE" ]; then
         cat "$STATE_FILE"
@@ -143,14 +139,14 @@ load_state() {
     fi
 }
 
-# 状態ファイルの保存
+# Save the state file
 save_state() {
     local state="$1"
     echo "$state" > "$STATE_FILE"
     log_message "INFO" "状態保存: $state"
 }
 
-# 新リリース検出時のアクション実行
+# Action on new release detection
 execute_update_action() {
     local new_tag="$1"
     local published_at="$2"
@@ -170,24 +166,24 @@ execute_update_action() {
     if [ "$AUTO_UPDATE" = true ]; then
         log_message "INFO" "自動更新を開始..."
         
-        # 更新前の確認
+        # Pre-update state
         log_message "INFO" "更新前状態確認"
         CURRENT_CONTAINERS=$(ssh Cinnamon "docker ps --filter 'name=bulk-block-users' --format '{{.Names}}' | wc -l" 2>/dev/null || echo "0")
         log_message "INFO" "稼働中コンテナ数: $CURRENT_CONTAINERS"
         
-        # docker compose downを実行
+        # Run docker compose down
         log_message "INFO" "docker compose down実行"
         if ssh Cinnamon "cd /opt/docker && docker compose down" 2>>"$LOG_FILE"; then
             log_message "INFO" "docker compose down成功"
             
-            # wait-for-deploymentを呼び出し
+            # Wait for the redeploy
             log_message "INFO" "デプロイ完了待機開始"
             SCRIPT_DIR="$(dirname "$(realpath "$0")")"
             
             if "$SCRIPT_DIR/wait-for-deployment" --timeout 30 2>>"$LOG_FILE"; then
                 log_message "SUCCESS" "自動更新完了: $new_tag"
                 
-                # 更新後の確認
+                # Post-update version
                 NEW_VERSION=$(ssh Cinnamon "docker ps --filter 'name=bulk-block-users' --format '{{.Names}}' | head -1 | xargs -I {} docker exec {} python3 -m twitter_blocker --version 2>/dev/null" | sed 's/^python3 -m twitter_blocker //' || echo "Unknown")
                 log_message "INFO" "更新後バージョン: $NEW_VERSION"
             else
@@ -204,7 +200,7 @@ execute_update_action() {
     fi
 }
 
-# メイン監視ループ
+# Main monitoring loop
 main_monitoring_loop() {
     local start_time=$(date +%s)
     local end_time=$((start_time + MAX_DURATION))
@@ -212,7 +208,7 @@ main_monitoring_loop() {
     
     log_message "INFO" "監視開始 (間隔: ${CHECK_INTERVAL}秒, 最大時間: ${MAX_DURATION}秒)"
     
-    # 初期状態の取得
+    # Initial state
     local current_state=$(load_state)
     log_message "INFO" "前回状態: ${current_state:-"なし"}"
     
@@ -222,7 +218,7 @@ main_monitoring_loop() {
         
         log_message "INFO" "チェック #$check_count 実行中..."
         
-        # 現在のリリース情報を取得
+        # Fetch the latest release info
         local release_info=$(get_current_release)
         if [ $? -ne 0 ]; then
             log_message "ERROR" "リリース情報取得失敗 (チェック #$check_count)"
@@ -238,14 +234,14 @@ main_monitoring_loop() {
         
         log_message "INFO" "現在のリリース: $current_tag"
         
-        # 新リリース検出
+        # New release detected
         if [ -n "$current_state" ] && [ "$current_state" != "$release_info" ]; then
             local old_tag=$(echo "$current_state" | cut -d'|' -f1)
             log_message "ALERT" "新リリース検出: $old_tag → $current_tag"
             
             execute_update_action "$current_tag" "$current_published"
             
-            # 状態を更新
+            # Update the state
             save_state "$release_info"
         elif [ -z "$current_state" ]; then
             log_message "INFO" "初回実行: 現在のリリースを状態に保存"
@@ -254,7 +250,7 @@ main_monitoring_loop() {
             log_message "INFO" "新リリースなし: $current_tag"
         fi
         
-        # One-shotモードまたは時間制限チェック
+        # One-shot mode or time limit
         if [ "$ONE_SHOT" = true ]; then
             log_message "INFO" "One-shotモード: 監視終了"
             break
@@ -265,7 +261,7 @@ main_monitoring_loop() {
             break
         fi
         
-        # 次のチェックまで待機
+        # Wait for the next check
         log_message "INFO" "次のチェックまで ${CHECK_INTERVAL}秒待機..."
         sleep "$CHECK_INTERVAL"
     done
@@ -273,7 +269,7 @@ main_monitoring_loop() {
     log_message "INFO" "監視完了 (総チェック回数: $check_count)"
 }
 
-# 設定表示
+# Show settings
 echo "⚙️ MONITORING CONFIGURATION"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "📊 監視設定:"
@@ -291,10 +287,10 @@ echo "  状態ファイル: $STATE_FILE"
 echo "  ログファイル: $LOG_FILE"
 echo ""
 
-# ログファイルの初期化
+# Start logging
 log_message "INFO" "リリース監視開始"
 
-# メイン監視ループ実行
+# Run the loop
 main_monitoring_loop
 
 echo

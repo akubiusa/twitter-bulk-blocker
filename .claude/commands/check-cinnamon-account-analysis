@@ -1,13 +1,12 @@
 #!/bin/bash
 
-# check-cinnamon-account-analysis - アカウント別詳細分析・最適化提案モジュール
+# check-cinnamon-account-analysis - per-account analysis and optimization suggestions
 
 set -e
 
 BRIEF=false
 RECOMMENDATIONS=true
 
-# オプション解析
 while [[ $# -gt 0 ]]; do
     case $1 in
         --brief|-b)
@@ -29,32 +28,32 @@ if [ "$BRIEF" = false ]; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 fi
 
-# アカウント分析データ収集
+# collect per-account data
 analyze_account() {
     local account="$1"
     local container="bulk-block-users-${account}-1"
     
-    # 過去24時間のログ分析
+    # last 24 hours
     local processed_24h=$(ssh Cinnamon "docker logs $container --since='24h' 2>&1 | grep -E '(blocked|success|completed)' | wc -l" 2>/dev/null || echo "0")
     local errors_24h=$(ssh Cinnamon "docker logs $container --since='24h' 2>&1 | grep -E '(403|error|failed)' | wc -l" 2>/dev/null || echo "0")
     local rate_limit_errors=$(ssh Cinnamon "docker logs $container --since='24h' 2>&1 | grep -i 'rate.limit' | wc -l" 2>/dev/null || echo "0")
     local auth_errors=$(ssh Cinnamon "docker logs $container --since='24h' 2>&1 | grep -E '(unauthorized|authentication|cookie)' | wc -l" 2>/dev/null || echo "0")
     local network_errors=$(ssh Cinnamon "docker logs $container --since='24h' 2>&1 | grep -E '(timeout|connection|network)' | wc -l" 2>/dev/null || echo "0")
     
-    # 過去1時間のエラー頻度（直近の状態）
+    # last hour (current state)
     local recent_errors=$(ssh Cinnamon "docker logs $container --since='1h' 2>&1 | grep -E '(403|error|failed)' | wc -l" 2>/dev/null || echo "0")
     
-    # 成功率計算
+    # success rate
     local success_rate=0
     if [ "$processed_24h" -gt 0 ]; then
         success_rate=$(( (processed_24h - errors_24h) * 100 / processed_24h ))
     fi
     
-    # リスクレベル判定
+    # risk level
     local risk_level="LOW"
     local risk_score=0
     
-    # リスクスコア計算
+    # risk score
     if [ "$errors_24h" -gt 100 ]; then
         risk_score=$((risk_score + 3))
     elif [ "$errors_24h" -gt 50 ]; then
@@ -81,7 +80,7 @@ analyze_account() {
         risk_level="MEDIUM"
     fi
     
-    # エラータイプ分析
+    # error types
     local primary_issue="NONE"
     if [ "$auth_errors" -gt "$rate_limit_errors" ] && [ "$auth_errors" -gt "$network_errors" ]; then
         primary_issue="AUTH"
@@ -93,7 +92,7 @@ analyze_account() {
         primary_issue="GENERAL"
     fi
     
-    # 結果をJSONフォーマットで出力
+    # emit JSON
     cat <<EOF
 {
   "account": "$account",
@@ -118,7 +117,7 @@ analyze_account() {
 EOF
 }
 
-# 最適化提案生成
+# generate suggestions
 generate_recommendations() {
     local account_data="$1"
     local account=$(echo "$account_data" | jq -r '.account')
@@ -130,7 +129,7 @@ generate_recommendations() {
     
     local recommendations=()
     
-    # リスクレベル別の基本推奨事項
+    # base recommendations per risk level
     case "$risk_level" in
         "HIGH")
             recommendations+=("🚨 緊急対応が必要：コンテナ再起動を検討")
@@ -162,7 +161,7 @@ generate_recommendations() {
             ;;
     esac
     
-    # 具体的な実行コマンド提案
+    # concrete commands
     if [ "$risk_level" = "HIGH" ]; then
         case "$primary_issue" in
             "AUTH")
@@ -177,7 +176,7 @@ generate_recommendations() {
         esac
     fi
     
-    # アカウント固有の最適化提案
+    # account-specific suggestions
     case "$account" in
         "book000")
             if [ "$errors_24h" -gt 20 ]; then
@@ -196,7 +195,7 @@ generate_recommendations() {
             ;;
     esac
     
-    # 推奨事項をJSON配列として出力
+    # emit as JSON array
     local rec_json="["
     local first=true
     for rec in "${recommendations[@]}"; do
@@ -212,10 +211,10 @@ generate_recommendations() {
     echo "$rec_json"
 }
 
-# アカウントリスト
+# accounts
 accounts=("book000" "ihc_amot" "book000_vrc" "authorizedkey" "tomachi_priv" "tomarabbit")
 
-# 全アカウント分析
+# analyze all accounts
 for account in "${accounts[@]}"; do
     echo ""
     if [ "$BRIEF" = true ]; then
@@ -227,7 +226,7 @@ for account in "${accounts[@]}"; do
     
     account_data=$(analyze_account "$account")
     
-    # 基本メトリクス表示
+    # basic metrics
     processed=$(echo "$account_data" | jq -r '.metrics.processed_24h')
     errors=$(echo "$account_data" | jq -r '.metrics.errors_24h')
     success_rate=$(echo "$account_data" | jq -r '.metrics.success_rate')
@@ -235,7 +234,7 @@ for account in "${accounts[@]}"; do
     risk_level=$(echo "$account_data" | jq -r '.risk_assessment.level')
     primary_issue=$(echo "$account_data" | jq -r '.error_breakdown.primary_issue')
     
-    # リスクレベル表示用アイコン
+    # risk level icon
     case "$risk_level" in
         "HIGH") risk_icon="🚨" ;;
         "MEDIUM") risk_icon="⚠️" ;;
@@ -261,7 +260,7 @@ for account in "${accounts[@]}"; do
         fi
     fi
     
-    # 最適化提案表示
+    # show suggestions
     if [ "$RECOMMENDATIONS" = true ]; then
         recommendations=$(generate_recommendations "$account_data")
         rec_count=$(echo "$recommendations" | jq length)
@@ -286,14 +285,14 @@ for account in "${accounts[@]}"; do
     fi
 done
 
-# 全体サマリー
+# overall summary
 echo ""
 if [ "$BRIEF" = false ]; then
     echo "📋 OVERALL SUMMARY"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 fi
 
-# 高リスクアカウント数を集計
+# count high-risk accounts
 high_risk_count=0
 medium_risk_count=0
 low_risk_count=0
@@ -318,7 +317,7 @@ else
     echo "  ✅ LOW リスク: ${low_risk_count}アカウント"
 fi
 
-# 緊急対応が必要な場合の警告
+# urgent warning
 if [ "$high_risk_count" -gt 0 ]; then
     echo ""
     echo "🚨 緊急対応推奨: ${high_risk_count}アカウントで高リスクを検出"

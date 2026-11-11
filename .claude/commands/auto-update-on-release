@@ -1,12 +1,9 @@
 #!/bin/bash
 
-# auto-update-on-release - 新リリース検出時に一回だけdocker compose downを実行
+# auto-update-on-release - run docker compose down once when a new release is detected
 #
-# 機能:
-# - GitHub APIで新リリースをチェック
-# - 新しいリリースが検出された場合のみdocker compose downを実行
-# - バックグラウンド実行ではなく、フォアグラウンドで1回だけ実行
-# - 実行後は自動的に終了
+# Checks the GitHub API for a new release and runs docker compose down only if one is found.
+# Runs once in the foreground and exits.
 
 set -e
 
@@ -14,13 +11,13 @@ echo "=== AUTO UPDATE ON NEW RELEASE ==="
 echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
 echo
 
-# 設定
+# Settings
 GITHUB_REPO="book000/twitter-bulk-blocker"
 GITHUB_API_URL="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
 STATE_FILE="/tmp/twitter-bulk-blocker-release-monitor.state"
 LOG_FILE="/tmp/twitter-bulk-blocker-auto-update.log"
 
-# オプション解析
+# Option parsing
 DRY_RUN=false
 FORCE_UPDATE=false
 VERBOSE=false
@@ -63,7 +60,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ログ関数
+# Logging
 log_message() {
     local level="$1"
     local message="$2"
@@ -78,7 +75,7 @@ log_message() {
     fi
 }
 
-# 現在のリリース情報を取得
+# Fetch the latest release info
 get_current_release() {
     local api_response=$(timeout 30 curl -s "$GITHUB_API_URL" 2>/dev/null || echo "")
     
@@ -99,7 +96,7 @@ get_current_release() {
     return 0
 }
 
-# 状態ファイルの読み込み
+# Load the state file
 load_state() {
     if [ -f "$STATE_FILE" ]; then
         cat "$STATE_FILE"
@@ -108,7 +105,7 @@ load_state() {
     fi
 }
 
-# 状態ファイルの保存
+# Save the state file
 save_state() {
     local state="$1"
     echo "$state" > "$STATE_FILE"
@@ -131,11 +128,11 @@ log_message "INFO" "自動更新チェック開始"
 echo "🔍 RELEASE CHECK"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 前回の状態を取得
+# Previous state
 current_state=$(load_state)
 log_message "INFO" "前回状態: ${current_state:-"なし"}"
 
-# 現在のリリース情報を取得
+# Latest release info
 echo "📡 GitHub APIから最新リリース情報を取得中..."
 release_info=$(get_current_release)
 if [ $? -ne 0 ]; then
@@ -150,7 +147,7 @@ echo "  最新リリース: $current_tag"
 echo "  公開日時: $current_published"
 log_message "INFO" "現在のリリース: $current_tag"
 
-# 新リリース検出またはフォース実行の判定
+# Decide whether to update: forced, new release, first run, or no change
 if [ "$FORCE_UPDATE" = true ]; then
     echo "🚀 強制更新モード: バージョンチェックをスキップ"
     log_message "INFO" "強制更新モード実行"
@@ -184,7 +181,7 @@ if [ "$should_update" = true ]; then
         echo "🔄 docker compose down を実行中..."
         log_message "INFO" "docker compose down実行開始"
         
-        # Cinnamonサーバーでdocker compose downを実行
+        # Run docker compose down on the Cinnamon server
         if ssh Cinnamon "cd /mnt/hdd/cinnamon/twitter-auto-blocking/bulk-block-users && docker compose down"; then
             echo "✅ docker compose down 完了"
             log_message "SUCCESS" "docker compose down成功: $current_tag"
@@ -199,7 +196,7 @@ if [ "$should_update" = true ]; then
         fi
     fi
     
-    # 状態を更新
+    # Update the state
     save_state "$release_info"
     
     echo ""

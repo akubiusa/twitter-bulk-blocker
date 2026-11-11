@@ -1,14 +1,14 @@
 #!/bin/bash
 
-# check-cinnamon-container-health - コンテナ健康状態の詳細分析モジュール
-# 停止コンテナの自動検知と再起動推奨
+# check-cinnamon-container-health - container health analysis
+# detects stopped containers and recommends restarts
 
 set -e
 
 echo "🏥 CONTAINER HEALTH DETAILED ANALYSIS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# コンテナリスト
+# containers
 containers=("book000" "ihc_amot" "book000_vrc" "authorizedkey" "tomachi_priv" "tomarabbit")
 stopped_containers=()
 restart_recommended=()
@@ -19,19 +19,19 @@ echo ""
 for container in "${containers[@]}"; do
     container_name="bulk-block-users-${container}-1"
     
-    # コンテナ状態取得
+    # container state
     status_info=$(ssh Cinnamon "docker ps -a --filter name=$container_name --format '{{.Status}}' | head -1" 2>/dev/null || echo "Unknown")
     
     if [[ "$status_info" == *"Up"* ]]; then
-        # 稼働時間取得
+        # uptime
         uptime=$(echo "$status_info" | grep -o "Up.*" || echo "Unknown")
         echo "✅ $container: $uptime"
         
-        # 最近のエラーチェック
+        # recent errors
         recent_errors=$(ssh Cinnamon "docker logs $container_name --since 10m 2>/dev/null | grep -c '403エラー.*回検出' || echo 0")
-        # 改行・空白除去
+        # strip newlines and whitespace
         recent_errors=$(echo "$recent_errors" | tr -d '\n\r ')
-        # 数値検証
+        # validate numeric
         [[ ! "$recent_errors" =~ ^[0-9]+$ ]] && recent_errors=0
         
         if [ "$recent_errors" -gt 10 ]; then
@@ -40,14 +40,14 @@ for container in "${containers[@]}"; do
         fi
         
     elif [[ "$status_info" == *"Exited"* ]]; then
-        # 停止情報詳細
+        # stop details
         exit_code=$(echo "$status_info" | grep -o "Exited ([0-9]*)" | grep -o "[0-9]*" || echo "Unknown")
         stopped_time=$(echo "$status_info" | grep -o "[0-9]* .* ago" || echo "Unknown")
         
         echo "🔴 $container: 停止中 (Exit code: $exit_code)"
         echo "   停止時刻: $stopped_time前"
         
-        # 停止理由の判定
+        # stop reason
         case "$exit_code" in
             0)
                 echo "   理由: 正常終了（処理完了）"
@@ -68,7 +68,7 @@ for container in "${containers[@]}"; do
         
         stopped_containers+=("$container")
         
-        # 最終ログ確認
+        # last log lines
         echo "   📋 最終ログ:"
         ssh Cinnamon "docker logs $container_name --tail 3 2>&1 | sed 's/^/      /'" 2>/dev/null || echo "      ログ取得失敗"
         
@@ -79,7 +79,7 @@ for container in "${containers[@]}"; do
     echo ""
 done
 
-# サマリー表示
+# summary
 echo "📊 SUMMARY"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
@@ -93,7 +93,7 @@ fi
 
 echo ""
 
-# 推奨アクション
+# recommended actions
 if [ ${#restart_recommended[@]} -gt 0 ]; then
     echo "🚨 RECOMMENDED ACTIONS"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
