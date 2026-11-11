@@ -1,6 +1,4 @@
-"""
-一括ブロック管理メインモジュール
-"""
+"""Orchestrates the bulk block run over the target users."""
 
 import time
 from typing import Any, Dict, List, Optional
@@ -12,7 +10,7 @@ from .retry import RetryManager
 
 
 class BulkBlockManager:
-    """一括ブロック管理システム"""
+    """Coordinates bulk blocking of the target users."""
 
     def __init__(
         self,
@@ -36,7 +34,7 @@ class BulkBlockManager:
         )
         self.retry_manager = RetryManager()
         
-        # HTTPエラー分析システムの初期化
+        # Each monitor below is optional; if its import or init fails, its attribute is set to None.
         try:
             from .error_analytics import HTTPErrorAnalytics
             self.api.error_analytics = HTTPErrorAnalytics(self.database)
@@ -47,7 +45,6 @@ class BulkBlockManager:
                 print(f"⚠️ HTTPエラー分析システム初期化失敗: {e}")
             self.api.error_analytics = None
         
-        # パフォーマンス監視システムの初期化
         try:
             from .performance_monitor import PerformanceMonitor
             self.performance_monitor = PerformanceMonitor(self.database)
@@ -58,7 +55,6 @@ class BulkBlockManager:
                 print(f"⚠️ パフォーマンス監視システム初期化失敗: {e}")
             self.performance_monitor = None
         
-        # ユーザーステータス監視システムの初期化
         try:
             from .user_status_monitor import UserStatusMonitor
             self.status_monitor = UserStatusMonitor(self.database)
@@ -70,32 +66,28 @@ class BulkBlockManager:
             self.status_monitor = None
 
     def load_target_users(self) -> List[str]:
-        """ブロック対象ユーザーリストを読み込み"""
         users, _ = self.config_manager.load_users_data()
         return users
 
     def get_user_format(self) -> str:
-        """ユーザーファイルの形式を取得"""
+        """Return the users file format ("screen_name" or "user_id")."""
         return self.config_manager.get_user_format()
 
     def is_already_blocked(
         self, identifier: str, user_format: str = "screen_name"
     ) -> bool:
-        """ユーザーが既にブロック済みかチェック"""
         return self.database.is_already_blocked(identifier, user_format)
 
     def get_blocked_users_count(self) -> int:
-        """ブロック済みユーザー数を取得"""
         return self.database.get_blocked_users_count()
 
     def get_remaining_users(self) -> List[str]:
-        """未処理のユーザーリストを取得"""
+        """Return target users that are not in the DB blocked set."""
         target_users = self.load_target_users()
         user_format = self.get_user_format()
 
         blocked_users = self.database.get_blocked_users_set(user_format)
 
-        # 未処理のユーザーのみを返す
         remaining_users = [
             user for user in target_users if str(user) not in blocked_users
         ]
@@ -103,11 +95,10 @@ class BulkBlockManager:
         return remaining_users
 
     def get_retry_candidates(self) -> List[Dict[str, Any]]:
-        """リトライ候補のユーザーを取得"""
         return self.database.get_retry_candidates()
 
     def reset_retry_counts(self) -> int:
-        """全ての失敗ユーザーのリトライ回数をリセット"""
+        """Reset retry counts of all failed users and return the number of affected rows."""
         affected_rows = self.database.reset_retry_counts()
         print(f"リトライ回数をリセットしました: {affected_rows}人")
         return affected_rows
@@ -115,14 +106,18 @@ class BulkBlockManager:
     def process_bulk_block(
         self, max_users: Optional[int] = None, delay: float = 1.0, batch_size: int = 50
     ) -> None:
-        """一括ブロック処理を実行"""
+        """Block remaining target users in batches.
+
+        Args:
+            max_users: Cap on users handled in this run (None = no cap).
+            delay: Wait in seconds: between batches for user_id format, after each executed block for screen_name format.
+            batch_size: Number of users per lookup batch.
+        """
         print("=== 一括ブロック処理開始 ===")
 
-        # 処理対象ユーザーを取得
         remaining_users = self.get_remaining_users()
         total_targets = len(remaining_users)
 
-        # ユーザーファイルの形式を取得
         user_format = self.get_user_format()
         print(f"ユーザーファイル形式: {user_format}")
 
@@ -138,10 +133,9 @@ class BulkBlockManager:
             print("✓ 全てのユーザーが既にブロック済みです")
             return
 
-        # セッション開始
         session_id = self.database.start_session(total_targets)
         
-        # パフォーマンス監視開始
+        # Wall-clock start, used for throughput metrics
         processing_start_time = time.time()
         
         stats = {"processed": 0, "blocked": 0, "skipped": 0, "errors": 0}
@@ -150,24 +144,21 @@ class BulkBlockManager:
         print(f"バッチサイズ: {batch_size}")
         print("-" * 50)
 
-        # user_id形式とscreen_name形式で処理を分ける
+        # Both formats use batched lookups; only the lookup API differs
         if user_format == "user_id":
             self._process_users_batch(remaining_users, user_format, stats, delay, batch_size, session_id)
         else:
-            # screen_name形式も新しいバッチ処理を使用
             self._process_screen_names_batch(remaining_users, user_format, stats, delay, batch_size, session_id)
 
-        # パフォーマンス分析と記録
         processing_end_time = time.time()
         total_processing_time = processing_end_time - processing_start_time
         
         if self.performance_monitor and total_processing_time > 0:
-            # 全体パフォーマンス指標の計算
+            # requests = processed + errors; success_rate = blocked / requests
             total_requests = stats["processed"] + stats["errors"]
             requests_per_second = total_requests / total_processing_time if total_processing_time > 0 else 0
             success_rate = stats["blocked"] / max(total_requests, 1)
             
-            # パフォーマンスメトリクスの記録
             performance_metrics = {
                 'processing_time': total_processing_time,
                 'requests_per_second': requests_per_second,
@@ -185,7 +176,6 @@ class BulkBlockManager:
             
             self.performance_monitor.record_processing_metrics(performance_metrics)
             
-            # 処理ウィンドウ統計の更新
             window_data = {
                 'window_start': processing_start_time,
                 'window_end': processing_end_time,
@@ -199,20 +189,18 @@ class BulkBlockManager:
             
             self.performance_monitor.update_processing_window(window_data)
             
-            # 劣化閾値のチェック
             alerts = self.performance_monitor.check_degradation_thresholds(performance_metrics)
             if alerts:
                 print(f"\n⚠️ パフォーマンスアラート: {len(alerts)}件の問題を検出")
                 for alert in alerts:
                     print(f"  {alert['severity']}: {alert['title']}")
 
-        # セッション完了
         self.database.complete_session(session_id)
 
         self._print_completion_stats(remaining_users, stats)
 
     def process_retries(self, max_retries: Optional[int] = None) -> None:
-        """リトライ処理を実行"""
+        """Retry failed users, up to max_retries candidates (None = all)."""
         print("=== リトライ処理開始 ===")
 
         retry_candidates = self.get_retry_candidates()
@@ -248,7 +236,7 @@ class BulkBlockManager:
         batch_size: int,
         session_id: int,
     ) -> None:
-        """ユーザーIDリストの一括処理"""
+        """Process user IDs in batches; sleep `delay` seconds between batches."""
         total_count = len(user_ids)
         processed_count = 0
         
@@ -259,10 +247,9 @@ class BulkBlockManager:
             
             print(f"\n[BATCH {batch_start}-{batch_end}/{total_count}] {len(batch_ids)}ユーザーを一括取得中...")
             
-            # 重複チェック（一括）
             unchecked_ids = []
             
-            # 永続的失敗を一括取得（N+1問題を回避）
+            # Fetch permanent failures for the whole batch in one query (avoids N+1)
             permanent_failures = self.database.get_permanent_failures_batch(batch_ids, user_format)
             
             for user_id in batch_ids:
@@ -284,10 +271,8 @@ class BulkBlockManager:
                 continue
             
             try:
-                # 一括ユーザー情報取得
                 users_info = self.api.get_users_info_batch(unchecked_ids, batch_size)
                 
-                # 各ユーザーを個別に処理
                 for user_id in unchecked_ids:
                     processed_count += 1
                     user_info = users_info.get(user_id)
@@ -302,23 +287,18 @@ class BulkBlockManager:
                     
                     screen_name = user_info.get("screen_name") or user_id
                     
-                    # ユーザー状態チェック
                     if self._check_user_unavailable(user_info, screen_name, stats):
                         continue
                     
-                    # フォロー関係チェック
                     if self._check_follow_relationship(user_info, screen_name, stats):
                         continue
                     
-                    # 既にブロック済みかチェック
                     if self._check_already_blocking(user_info, screen_name, stats):
                         continue
                     
-                    # ブロック実行
                     self._execute_block(user_info, screen_name, stats)
                     stats["processed"] += 1
                 
-                # セッション更新
                 self.database.update_session(
                     session_id,
                     stats["processed"],
@@ -327,13 +307,12 @@ class BulkBlockManager:
                     stats["errors"],
                 )
                 
-                # 進捗表示
                 print(
                     f"  → バッチ完了: {batch_end}/{total_count} "
                     f"(ブロック: {stats['blocked']}, スキップ: {stats['skipped']}, エラー: {stats['errors']})"
                 )
                 
-                # バッチ間の待機
+                # Wait between batches, not after the last one
                 if i + batch_size < len(user_ids):
                     time.sleep(delay)
                     
@@ -344,7 +323,7 @@ class BulkBlockManager:
                 print(f"  デバッグ情報: バッチサイズ={len(unchecked_ids)}, 開始インデックス={i}")
                 if self.api.debug_mode:
                     print(f"  スタックトレース:\n{traceback.format_exc()}")
-                # バッチエラー時は個別処理にフォールバック
+                # A batch-level failure marks every unchecked user in the batch as an error
                 for user_id in unchecked_ids:
                     processed_count += 1
                     stats["errors"] += 1
@@ -361,7 +340,7 @@ class BulkBlockManager:
         batch_size: int,
         session_id: int,
     ) -> None:
-        """screen_nameリストの一括処理"""
+        """Process screen names in batches; sleep `delay` seconds after each executed block."""
         total_count = len(screen_names)
         processed_count = 0
         
@@ -372,10 +351,9 @@ class BulkBlockManager:
             
             print(f"\n[BATCH {batch_start}-{batch_end}/{total_count}] {len(batch_names)}ユーザーを一括取得中...")
             
-            # 重複チェック（一括）
             unchecked_names = []
             
-            # 永続的失敗を一括取得（N+1問題を回避）
+            # Fetch permanent failures for the whole batch in one query (avoids N+1)
             permanent_failures = self.database.get_permanent_failures_batch(batch_names, user_format)
             
             for screen_name in batch_names:
@@ -397,10 +375,8 @@ class BulkBlockManager:
                 continue
             
             try:
-                # 新しいAPIメソッドで一括ユーザー情報取得
                 users_info = self.api.get_users_info_by_screen_names(unchecked_names, batch_size)
                 
-                # 各ユーザーを個別に処理
                 for screen_name in unchecked_names:
                     processed_count += 1
                     user_info = users_info.get(screen_name)
@@ -413,26 +389,21 @@ class BulkBlockManager:
                         )
                         continue
                     
-                    # ユーザー状態チェック
                     if self._check_user_unavailable(user_info, screen_name, stats):
                         continue
                     
-                    # フォロー関係チェック
                     if self._check_follow_relationship(user_info, screen_name, stats):
                         continue
                     
-                    # 既にブロック済みかチェック
                     if self._check_already_blocking(user_info, screen_name, stats):
                         continue
                     
-                    # ブロック実行
                     self._execute_block(user_info, screen_name, stats)
                     
-                    # 処理間の待機
+                    # Wait between users, not after the last one
                     if processed_count < total_count:
                         time.sleep(delay)
                 
-                # セッション更新
                 self.database.update_session(
                     session_id,
                     processed_count,
@@ -441,7 +412,6 @@ class BulkBlockManager:
                     stats["errors"],
                 )
                 
-                # 進捗表示
                 print(
                     f"  進捗: {processed_count}/{total_count} 完了 "
                     f"(ブロック: {stats['blocked']}, スキップ: {stats['skipped']}, エラー: {stats['errors']})"
@@ -454,7 +424,7 @@ class BulkBlockManager:
                 print(f"  デバッグ情報: バッチサイズ={len(unchecked_names)}, 開始インデックス={i}")
                 if hasattr(self.api, 'debug_mode') and self.api.debug_mode:
                     print(f"  スタックトレース:\n{traceback.format_exc()}")
-                # バッチエラー時は個別処理にフォールバック
+                # A batch-level failure marks every unchecked user in the batch as an error
                 for screen_name in unchecked_names:
                     processed_count += 1
                     stats["errors"] += 1
@@ -471,8 +441,7 @@ class BulkBlockManager:
         stats: Dict[str, int],
         delay: float,
     ) -> None:
-        """単一ユーザーの処理"""
-        # ユーザー形式に応じて表示とキーを設定
+        """Process one user: skip checks, lookup, block, then sleep `delay` seconds."""
         if user_format == "user_id":
             print(
                 f"[{current_index}/{total_count}] ユーザーID {user_identifier} を処理中..."
@@ -483,19 +452,17 @@ class BulkBlockManager:
         lookup_key = str(user_identifier)
 
         try:
-            # 重複チェック
             if self.is_already_blocked(lookup_key, user_format):
                 print("  ℹ スキップ: 既にブロック済み")
                 stats["skipped"] += 1
                 return
 
-            # 永続的失敗チェック（API呼び出し前）
+            # Intended: skip known permanent failures before any API call (NOTE: currently never skips, see Database.is_permanent_failure)
             if self.database.is_permanent_failure(lookup_key, user_format):
                 failure_info = self.database.get_permanent_failure_info(lookup_key, user_format)
                 user_status = failure_info.get("user_status", "unknown") if failure_info else "unknown"
                 error_message = failure_info.get("error_message", "") if failure_info else ""
                 
-                # ユーザー識別子を含めてログ出力
                 if user_format == "user_id":
                     print(f"  ⚠ スキップ: 既知の永続的失敗 ({user_status}) - ユーザーID: {lookup_key}")
                 else:
@@ -507,7 +474,6 @@ class BulkBlockManager:
                 stats["skipped"] += 1
                 return
 
-            # ユーザー情報を取得
             if user_format == "user_id":
                 user_info = self.api.get_user_info_by_id(user_identifier)
             else:
@@ -526,24 +492,19 @@ class BulkBlockManager:
 
             screen_name = user_info.get("screen_name") or str(user_identifier)
 
-            # ユーザー状態チェック
             if self._check_user_unavailable(user_info, screen_name, stats):
                 return
 
-            # フォロー関係チェック
             if self._check_follow_relationship(user_info, screen_name, stats):
                 return
 
-            # 既にブロック済みかチェック
             if self._check_already_blocking(user_info, screen_name, stats):
                 return
 
-            # ブロック実行
             self._execute_block(user_info, screen_name, stats)
 
             stats["processed"] += 1
 
-            # レート制限対策
             time.sleep(delay)
 
         except Exception as e:
@@ -570,7 +531,7 @@ class BulkBlockManager:
         total_count: int,
         stats: Dict[str, int],
     ) -> None:
-        """リトライユーザーの処理"""
+        """Retry one failed candidate (lookup only; see note below)."""
         screen_name = candidate["screen_name"]
         user_id = candidate["user_id"]
         retry_count = candidate["retry_count"] + 1
@@ -580,7 +541,7 @@ class BulkBlockManager:
         )
 
         try:
-            # 永続的失敗チェック（リトライ前）
+            # Intended: skip known permanent failures (NOTE: currently never skips, see Database.is_permanent_failure)
             if self.database.is_permanent_failure(screen_name, "screen_name"):
                 failure_info = self.database.get_permanent_failure_info(screen_name, "screen_name")
                 user_status = failure_info.get("user_status", "unknown") if failure_info else "unknown"
@@ -588,7 +549,6 @@ class BulkBlockManager:
                 stats["skipped"] += 1
                 return
 
-            # 最新のユーザー情報を再取得
             user_info = self.api.get_user_info(screen_name)
 
             if not user_info:
@@ -606,8 +566,7 @@ class BulkBlockManager:
                 )
                 return
 
-            # 各種チェックとブロック実行（詳細実装は省略）
-            # ... 実際の実装では元のprocess_retries()と同じロジック
+            # NOTE: the block is not re-executed here; only the lookup is repeated and the user is counted as processed
 
             stats["processed"] += 1
             time.sleep(2.0)
@@ -634,7 +593,10 @@ class BulkBlockManager:
     def _check_user_unavailable(
         self, user_info: Dict[str, Any], screen_name: str, stats: Dict[str, int]
     ) -> bool:
-        """ユーザー利用不可チェック"""
+        """Record and skip users flagged unavailable; return True if skipped.
+
+        NOTE: every such user is currently recorded as retryable, because should_retry returns a tuple (always truthy) so the "(permanent)" branch is unreachable.
+        """
         if user_info.get("unavailable", False):
             user_status = user_info.get("user_status", "unavailable")
             print(f"  ⚠ スキップ: ユーザー利用不可 ({user_status})")
@@ -671,7 +633,7 @@ class BulkBlockManager:
     def _check_follow_relationship(
         self, user_info: Dict[str, Any], screen_name: str, stats: Dict[str, int]
     ) -> bool:
-        """フォロー関係チェック"""
+        """Skip users with a follow relationship (following or followed by); return True if skipped."""
         if user_info["following"] or user_info["followed_by"]:
             print(
                 f"  ⚠ スキップ: フォロー関係あり "
@@ -693,7 +655,7 @@ class BulkBlockManager:
     def _check_already_blocking(
         self, user_info: Dict[str, Any], screen_name: str, stats: Dict[str, int]
     ) -> bool:
-        """既にブロック済みかチェック"""
+        """Record and skip users the account already blocks; return True if skipped."""
         if user_info["blocking"]:
             print("  ℹ スキップ: 既にブロック済み")
             stats["skipped"] += 1
@@ -712,7 +674,10 @@ class BulkBlockManager:
     def _execute_block(
         self, user_info: Dict[str, Any], screen_name: str, stats: Dict[str, int]
     ) -> None:
-        """ブロック実行"""
+        """Block the user via the API and record the outcome.
+
+        NOTE: the retryable/permanent split below is currently ineffective (should_retry returns a tuple, so every failure is recorded as retryable), and block_user returns "message" while this reads "error_message", so the stored error message is always "Unknown error".
+        """
         print(f"  → ブロック実行: {user_info['name']} (ID: {user_info['id']})")
         block_result = self.api.block_user(user_info["id"], screen_name)
 
@@ -737,7 +702,7 @@ class BulkBlockManager:
             status_code = block_result.get("status_code", 0)
             print(f"  ✗ ブロック失敗: {status_code} - {error_msg}")
 
-            # リトライ判定
+            # Intended: classify as retryable or permanent (NOTE: should_retry returns a tuple, so the else branch is unreachable)
             user_status = user_info.get("user_status", "active")
             status_code = block_result.get("status_code", 0)
             error_message = block_result.get("error_message", "Unknown error")
@@ -777,7 +742,6 @@ class BulkBlockManager:
     def _print_completion_stats(
         self, remaining_users: List[str], stats: Dict[str, int]
     ) -> None:
-        """完了統計の表示"""
         print("\n" + "=" * 50)
         print("=== 一括ブロック処理完了 ===")
         print(f"処理対象: {len(remaining_users)}人")

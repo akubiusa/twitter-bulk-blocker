@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""
-Twitter一括ブロックツール - パッケージ実行エントリーポイント
-
-python -m twitter_blocker で実行可能
-"""
+"""CLI entry point for `python -m twitter_blocker`."""
 
 import argparse
 import os
@@ -17,8 +13,7 @@ def main():
     parser = argparse.ArgumentParser(
         prog="python3 -m twitter_blocker", description="Twitter一括ブロックツール"
     )
-    
-    # バージョン情報表示
+
     parser.add_argument(
         "--version",
         action="version",
@@ -52,8 +47,7 @@ def main():
     parser.add_argument(
         "--delay", type=float, default=1.0, help="リクエスト間隔（秒、デフォルト: 1.0）"
     )
-    
-    # 拡張ヘッダー関連オプション
+
     parser.add_argument(
         "--disable-header-enhancement", 
         action="store_true", 
@@ -65,7 +59,6 @@ def main():
         help="x-xp-forwarded-forヘッダーの生成を有効化（試験的機能）"
     )
 
-    # ファイルパス指定オプション
     parser.add_argument(
         "--cookies",
         type=str,
@@ -93,7 +86,7 @@ def main():
 
     args = parser.parse_args()
 
-    # ファイル存在チェック
+    # Check input files only for blocking runs; other modes skip it, and a file they need (cookies for --retry/--test-user, users file for --stats) fails later at use.
     if not args.stats and not args.retry and not args.reset_retry and not args.clear_errors and not args.reset_failed and not args.debug_errors and not args.test_user:
         if not os.path.exists(args.cookies):
             print(f"❌ エラー: クッキーファイルが見つかりません: {args.cookies}")
@@ -111,14 +104,12 @@ def main():
             print(f"  または環境変数: export TWITTER_USERS_FILE=/path/to/users.json")
             sys.exit(1)
 
-    # パスの表示
     print(f"📁 使用ファイル:")
     print(f"  クッキー: {args.cookies}")
     print(f"  ユーザーリスト: {args.users_file}")
     print(f"  データベース: {args.db}")
     print()
 
-    # 拡張ヘッダー設定の処理
     enable_header_enhancement = not args.disable_header_enhancement
     enable_forwarded_for = args.enable_forwarded_for
     
@@ -138,12 +129,10 @@ def main():
         enable_forwarded_for=enable_forwarded_for
     )
 
-    # 統計表示
     if args.stats:
         show_stats(manager)
         return
 
-    # エラーメッセージデバッグ表示
     if args.debug_errors:
         error_samples = manager.database.get_error_message_samples(20)
         print("=== エラーメッセージサンプル ===")
@@ -151,7 +140,6 @@ def main():
             print(f"{i:2d}. {sample}")
         return
 
-    # 特定ユーザーのテスト
     if args.test_user:
         print(f"=== テストユーザー: {args.test_user} ===")
         user_info = manager.api.get_user_info(args.test_user)
@@ -165,18 +153,15 @@ def main():
             print(f"ユーザー情報取得失敗")
         return
 
-    # リトライ回数リセット処理
     if args.reset_retry:
         manager.reset_retry_counts()
         return
 
-    # エラーメッセージクリア処理
     if args.clear_errors:
         affected = manager.database.clear_error_messages()
         print(f"✅ {affected}件のエラーメッセージをクリアしました")
         return
 
-    # 失敗ユーザー完全リセット処理
     if args.reset_failed:
         affected = manager.database.reset_failed_users()
         print(f"✅ {affected}件の失敗ユーザーを完全リセットしました")
@@ -186,31 +171,27 @@ def main():
         print("  - ユーザーステータス: クリア")
         return
 
-    # リトライ処理
     if args.retry:
         manager.process_retries(max_retries=args.max_users)
         return
 
-    # 現在の状況を表示
     show_stats(manager)
 
     remaining_count = len(manager.get_remaining_users())
     if remaining_count == 0:
         print("✓ 全てのユーザーが既に処理済みです")
 
-        # リトライ候補をチェック
         retry_candidates = manager.get_retry_candidates()
         if retry_candidates:
             print(f"\nリトライ候補が {len(retry_candidates)}人 います")
             print("リトライ処理を実行: python3 -m twitter_blocker --retry")
         return
 
-    # 実行確認
+    # Without --all, run in test mode (first 5 users only)
     if args.all:
         print(f"\n🔥 本格実行モード: {remaining_count}人を処理します")
         manager.process_bulk_block(max_users=args.max_users, delay=args.delay)
 
-        # --auto-retryが指定されている場合は自動でリトライ処理も実行
         if args.auto_retry:
             print("\n" + "=" * 50)
             print("🔄 自動リトライ処理を開始します...")
@@ -220,7 +201,6 @@ def main():
             else:
                 print("リトライ候補はありません")
     else:
-        # テストモード（最初の5人のみ）
         max_test_users = min(5, remaining_count)
         print(f"\n🧪 テストモード: 最初の{max_test_users}人のみ処理します")
         print("本格実行する場合は: python3 -m twitter_blocker --all")
@@ -228,11 +208,10 @@ def main():
 
         manager.process_bulk_block(max_users=max_test_users, delay=args.delay)
 
-    # 処理後の統計とリトライ候補チェック
     print("\n" + "=" * 50)
     show_stats(manager)
 
-    if not args.auto_retry:  # 自動リトライを実行していない場合のみ表示
+    if not args.auto_retry:  # hint skipped with --auto-retry (retried above only when --all is also set)
         retry_candidates = manager.get_retry_candidates()
         if retry_candidates:
             print(f"\nリトライ候補: {len(retry_candidates)}人")

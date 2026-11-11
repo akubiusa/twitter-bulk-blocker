@@ -1,7 +1,4 @@
-"""
-処理速度低下自動検出アルゴリズム
-長期稼働時のパフォーマンス劣化の早期発見と対策提案
-"""
+"""Performance metrics, bottleneck detection and degradation alerts, stored in SQLite."""
 
 import json
 import sqlite3
@@ -13,7 +10,7 @@ from .database import DatabaseManager
 
 
 class PerformanceMonitor:
-    """処理速度とパフォーマンス監視システム"""
+    """Per-session performance monitor backed by the shared SQLite database."""
     
     def __init__(self, database_manager: DatabaseManager):
         self.db = database_manager
@@ -23,15 +20,14 @@ class PerformanceMonitor:
         self.init_performance_tables()
     
     def _generate_session_id(self) -> str:
-        """セッションIDを生成"""
+        """Return a session ID of the form perf_<epoch>_<YYYYmmdd_HHMMSS>."""
         return f"perf_{int(time.time())}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     def init_performance_tables(self):
-        """パフォーマンス監視用テーブルの初期化"""
+        """Create the performance_metrics, processing_speed_stats and performance_alerts tables if missing."""
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             
-            # パフォーマンス履歴テーブル
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS performance_metrics (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,7 +42,6 @@ class PerformanceMonitor:
                 )
             """)
             
-            # 処理速度統計テーブル
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS processing_speed_stats (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,7 +60,6 @@ class PerformanceMonitor:
                 )
             """)
             
-            # パフォーマンス劣化アラートテーブル
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS performance_alerts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,14 +79,19 @@ class PerformanceMonitor:
             print(f"🚀 パフォーマンス監視テーブル初期化完了: {self.db.db_file}")
     
     def record_processing_metrics(self, metrics: Dict[str, Any]) -> None:
-        """処理メトリクスの記録"""
+        """Insert one performance_metrics row per metric in `metrics`.
+
+        Args:
+            metrics: Metric name to numeric value. 'runtime_hours' is stored on every row
+                and 'context' (a JSON-serializable dict) is stored as context_json;
+                neither is recorded as a metric itself.
+        """
         current_time = time.time()
         runtime_hours = metrics.get('runtime_hours', 0)
         
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             
-            # 各メトリクスを個別に記録
             for metric_type, value in metrics.items():
                 if metric_type in ['runtime_hours', 'context']:
                     continue
@@ -112,7 +111,7 @@ class PerformanceMonitor:
                 ))
     
     def _get_metric_unit(self, metric_type: str) -> str:
-        """メトリクスタイプに対応する単位を取得"""
+        """Return the unit for a metric name, or 'unknown' if unregistered."""
         units = {
             'processing_time': 'seconds',
             'requests_per_second': 'rps',
@@ -127,11 +126,16 @@ class PerformanceMonitor:
         return units.get(metric_type, 'unknown')
     
     def update_processing_window(self, window_data: Dict[str, Any]) -> None:
-        """処理ウィンドウ統計の更新"""
+        """Insert a processing_speed_stats row for a time window, flagging any bottleneck.
+
+        Args:
+            window_data: Must contain 'window_start' and 'window_end' (epoch seconds).
+                Optional: total_processed, total_blocked, total_errors,
+                avg_processing_time (seconds), requests_per_second, success_rate (0-1).
+        """
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             
-            # ボトルネック検出
             bottleneck_detected, bottleneck_type = self._detect_bottleneck(window_data)
             
             cursor.execute("""
@@ -155,41 +159,45 @@ class PerformanceMonitor:
             ))
     
     def _detect_bottleneck(self, window_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
-        """ボトルネックの検出"""
+        """Check one window against fixed thresholds.
+
+        Returns:
+            (detected, comma-separated bottleneck names or None).
+        """
         bottlenecks = []
         
-        # リクエスト処理速度の低下
         rps = window_data.get('requests_per_second', 0)
-        if rps < 1.0:  # 1秒に1リクエスト未満
+        if rps < 1.0:  # below 1 request/second
             bottlenecks.append('low_request_rate')
         
-        # 平均処理時間の増加
         avg_time = window_data.get('avg_processing_time', 0)
-        if avg_time > 5.0:  # 5秒以上
+        if avg_time > 5.0:  # seconds
             bottlenecks.append('high_processing_time')
         
-        # 成功率の低下
         success_rate = window_data.get('success_rate', 1.0)
-        if success_rate < 0.8:  # 80%未満
+        if success_rate < 0.8:  # below 80%
             bottlenecks.append('low_success_rate')
         
-        # エラー率の増加
         total_requests = window_data.get('total_processed', 0) + window_data.get('total_errors', 0)
         if total_requests > 0:
             error_rate = window_data.get('total_errors', 0) / total_requests
-            if error_rate > 0.2:  # 20%以上
+            if error_rate > 0.2:  # above 20% of processed + errors
                 bottlenecks.append('high_error_rate')
         
         return len(bottlenecks) > 0, ','.join(bottlenecks) if bottlenecks else None
     
     def analyze_performance_degradation(self) -> Dict[str, Any]:
-        """パフォーマンス劣化の分析"""
+        """Compare the last hour of this session against its first hour (runtime_hours <= 1.0).
+
+        Returns:
+            Dict with baseline_comparison, processing_speed_trends,
+            degradation_patterns and recommendations.
+        """
         current_time = time.time()
         
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             
-            # 最近1時間のメトリクス取得
             cursor.execute("""
                 SELECT metric_type, AVG(value) as avg_value, COUNT(*) as count
                 FROM performance_metrics 
@@ -199,7 +207,7 @@ class PerformanceMonitor:
             
             recent_metrics = {row[0]: {'avg': row[1], 'count': row[2]} for row in cursor.fetchall()}
             
-            # ベースライン比較用の初期1時間のメトリクス
+            # Baseline: metrics recorded during the first hour of runtime.
             cursor.execute("""
                 SELECT metric_type, AVG(value) as avg_value, COUNT(*) as count
                 FROM performance_metrics 
@@ -209,7 +217,6 @@ class PerformanceMonitor:
             
             baseline_metrics = {row[0]: {'avg': row[1], 'count': row[2]} for row in cursor.fetchall()}
             
-            # 処理速度統計の取得
             cursor.execute("""
                 SELECT AVG(requests_per_second) as avg_rps,
                        AVG(avg_processing_time) as avg_proc_time,
@@ -222,7 +229,6 @@ class PerformanceMonitor:
             
             speed_stats = cursor.fetchone()
         
-        # 劣化分析
         degradation_analysis = {
             "status": "analysis_complete",
             "baseline_comparison": self._compare_with_baseline(recent_metrics, baseline_metrics),
@@ -236,13 +242,17 @@ class PerformanceMonitor:
             "recommendations": []
         }
         
-        # 推奨事項の生成
         degradation_analysis["recommendations"] = self._generate_performance_recommendations(degradation_analysis)
         
         return degradation_analysis
     
     def _compare_with_baseline(self, recent: Dict, baseline: Dict) -> Dict[str, Any]:
-        """ベースラインとの比較分析"""
+        """Compute per-metric percent change of recent vs baseline averages.
+
+        Metrics with a non-positive baseline average are omitted.
+        "trend" is "improved" above +5%, "degraded" below -5%, else "stable",
+        based on the sign of the change only, regardless of which direction is good for the metric.
+        """
         comparison = {}
         
         for metric_type in set(recent.keys()) | set(baseline.keys()):
@@ -261,7 +271,7 @@ class PerformanceMonitor:
         return comparison
     
     def _identify_degradation_patterns(self, recent: Dict, baseline: Dict) -> Dict[str, bool]:
-        """劣化パターンの特定"""
+        """Flag known degradation patterns by thresholding percent change from baseline."""
         patterns = {
             "processing_time_increase": False,
             "request_rate_decrease": False,
@@ -272,72 +282,60 @@ class PerformanceMonitor:
         
         comparison = self._compare_with_baseline(recent, baseline)
         
-        # 処理時間の増加
         if "processing_time" in comparison:
-            if comparison["processing_time"]["change_percent"] > 50:  # 50%以上増加
+            if comparison["processing_time"]["change_percent"] > 50:
                 patterns["processing_time_increase"] = True
         
-        # リクエスト率の低下
         if "requests_per_second" in comparison:
-            if comparison["requests_per_second"]["change_percent"] < -30:  # 30%以上低下
+            if comparison["requests_per_second"]["change_percent"] < -30:
                 patterns["request_rate_decrease"] = True
         
-        # 成功率の低下
         if "success_rate" in comparison:
-            if comparison["success_rate"]["change_percent"] < -10:  # 10%以上低下
+            if comparison["success_rate"]["change_percent"] < -10:
                 patterns["success_rate_decline"] = True
         
-        # メモリリーク疑い
         if "memory_usage" in comparison:
-            if comparison["memory_usage"]["change_percent"] > 100:  # 100%以上増加
+            if comparison["memory_usage"]["change_percent"] > 100:
                 patterns["memory_leak_suspected"] = True
         
-        # キャッシュ効率低下
         if "cache_hit_rate" in comparison:
-            if comparison["cache_hit_rate"]["change_percent"] < -20:  # 20%以上低下
+            if comparison["cache_hit_rate"]["change_percent"] < -20:
                 patterns["cache_efficiency_drop"] = True
         
         return patterns
     
     def _generate_performance_recommendations(self, analysis: Dict[str, Any]) -> List[str]:
-        """パフォーマンス改善推奨事項の生成"""
+        """Map degradation patterns and speed trends to human-readable recommendation strings."""
         recommendations = []
         patterns = analysis.get("degradation_patterns", {})
         speed_trends = analysis.get("processing_speed_trends", {})
         
-        # 処理時間増加への対応
         if patterns.get("processing_time_increase"):
             recommendations.append("🐌 処理時間の大幅増加検出 - バッチサイズの調整を推奨")
             recommendations.append("🔧 データベース接続プールの最適化を検討")
         
-        # リクエスト率低下への対応
         if patterns.get("request_rate_decrease"):
             recommendations.append("📉 リクエスト処理率低下 - 並行処理数の見直しが必要")
             recommendations.append("⚡ レート制限設定の緩和を検討")
         
-        # 成功率低下への対応
         if patterns.get("success_rate_decline"):
             recommendations.append("❌ 成功率低下検出 - エラーハンドリングの強化が必要")
             recommendations.append("🔄 リトライ戦略の見直しを推奨")
         
-        # メモリリーク疑いへの対応
         if patterns.get("memory_leak_suspected"):
             recommendations.append("🧠 メモリリーク疑い - キャッシュクリアの実行を推奨")
             recommendations.append("🔄 定期的なセッションリセットの実装を検討")
         
-        # キャッシュ効率低下への対応
         if patterns.get("cache_efficiency_drop"):
             recommendations.append("💾 キャッシュ効率低下 - キャッシュTTLの調整が必要")
             recommendations.append("🗂️ キャッシュ戦略の見直しを推奨")
         
-        # ボトルネック頻度による推奨
         bottleneck_freq = speed_trends.get("bottleneck_frequency", 0)
-        if bottleneck_freq > 0.3:  # 30%以上でボトルネック
+        if bottleneck_freq > 0.3:  # bottlenecks in more than 30% of windows
             recommendations.append(f"🚧 ボトルネック頻発 ({bottleneck_freq:.1%}) - システム全体の見直しが必要")
         
-        # 全体的な推奨事項
         avg_rps = speed_trends.get("avg_rps", 0)
-        if avg_rps < 0.5:  # 0.5rps未満
+        if avg_rps < 0.5:  # below 0.5 requests/second
             recommendations.append("🐢 極端な処理速度低下 - 緊急対応が必要")
             recommendations.append("🛠️ システム再起動の検討を推奨")
         
@@ -346,7 +344,7 @@ class PerformanceMonitor:
     def create_performance_alert(self, alert_type: str, severity: str, 
                                 title: str, description: str = "", 
                                 metrics: Dict = None, recommendations: List[str] = None) -> None:
-        """パフォーマンスアラートの生成"""
+        """Insert a performance_alerts row; metrics and recommendations are stored as JSON."""
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             
@@ -366,12 +364,19 @@ class PerformanceMonitor:
             ))
     
     def check_degradation_thresholds(self, current_metrics: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """劣化閾値のチェックとアラート生成"""
+        """Raise and persist alerts for severe degradation in `current_metrics`.
+
+        Args:
+            current_metrics: May contain requests_per_second, success_rate (0-1)
+                and avg_processing_time (seconds).
+
+        Returns:
+            The alert dicts created (each already saved via create_performance_alert).
+        """
         alerts = []
         
-        # 処理速度の重大な低下
         rps = current_metrics.get('requests_per_second', 0)
-        if rps < 0.1:  # 0.1rps未満
+        if rps < 0.1:  # below 0.1 requests/second
             alert = {
                 "alert_type": "critical_speed_degradation",
                 "severity": "CRITICAL",
@@ -386,9 +391,8 @@ class PerformanceMonitor:
             alerts.append(alert)
             self.create_performance_alert(**alert)
         
-        # 成功率の重大な低下
         success_rate = current_metrics.get('success_rate', 1.0)
-        if success_rate < 0.5:  # 50%未満
+        if success_rate < 0.5:  # below 50%
             alert = {
                 "alert_type": "critical_success_rate_drop",
                 "severity": "HIGH",
@@ -403,9 +407,8 @@ class PerformanceMonitor:
             alerts.append(alert)
             self.create_performance_alert(**alert)
         
-        # 平均処理時間の異常増加
         avg_time = current_metrics.get('avg_processing_time', 0)
-        if avg_time > 10.0:  # 10秒以上
+        if avg_time > 10.0:  # seconds
             alert = {
                 "alert_type": "high_processing_time",
                 "severity": "MEDIUM",
@@ -423,13 +426,12 @@ class PerformanceMonitor:
         return alerts
     
     def get_performance_summary(self) -> Dict[str, Any]:
-        """パフォーマンス概要の取得"""
+        """Return the latest stats window and active alert counts for this session."""
         current_time = time.time()
         
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             
-            # 最新の統計
             cursor.execute("""
                 SELECT requests_per_second, avg_processing_time, success_rate,
                        bottleneck_detected, bottleneck_type
@@ -441,7 +443,6 @@ class PerformanceMonitor:
             
             latest_stats = cursor.fetchone()
             
-            # アクティブなアラート数
             cursor.execute("""
                 SELECT COUNT(*) as active_alerts,
                        COUNT(CASE WHEN severity = 'CRITICAL' THEN 1 END) as critical_alerts
