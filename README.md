@@ -1,510 +1,251 @@
 # twitter-bulk-blocker
 
-Twitter/X.comで大量のユーザーを効率的にブロックするPythonツールです。クッキー認証とGraphQL APIを使用し、安全で確実なブロック処理を提供します。
+A Python CLI that blocks a large list of Twitter/X users. It authenticates with your browser cookies, looks users up through the GraphQL API, blocks them through the REST API, and records every result in SQLite so a run can be stopped and resumed.
 
-## ✨ 特徴
+## Features
 
-- 🔒 **安全性重視**: フォロー関係チェック、重複防止、リトライ機能
-- 📊 **詳細統計**: リアルタイム進捗表示、処理結果の詳細レポート
-- 🏗️ **モジュール設計**: 保守しやすい分離された設計
-- 🐳 **Docker対応**: コンテナ環境での実行をサポート
-- 🔄 **自動リトライ**: 一時的エラーの自動再試行（suspendedは除外）
-- 🎛️ **柔軟な設定**: 環境変数・コマンドライン引数・デフォルト値による多層設定
-- 🧪 **強力なデバッグ機能**: 詳細ログ、特定ユーザーテスト、エラー分析
+- Skips users you follow or who follow you, and does not block a user already recorded as blocked in the SQLite history.
+- Resumes where it left off: users already blocked are not processed again.
+- Re-checks failed users (`--retry`, `--auto-retry`) by repeating the user lookup; the block request is not re-sent (see [Known limitations](#known-limitations)). Permanently failed accounts (`suspended`, `not_found`, `deactivated`) are classified as such.
+- Batched lookups and a three-layer file cache (lookup, profile, relationship) with a 30-day TTL to reduce API calls.
+- Waits and retries on rate limits (429) and reloads the cookie file when authentication fails.
+- Debug tooling: `--debug`, `--test-user`, `--debug-errors`.
+- Runs standalone or in Docker.
 
-## 🚀 クイックスタート
+## Requirements
 
-### 必要なファイル
-
-1. **`cookies.json`** - X.comからエクスポートしたクッキー情報
-2. **ユーザーファイル** - ブロック対象ユーザーリスト（JSON形式）
-
-### 基本的な使用方法
+- Python 3 (the Docker image uses 3.15) with the packages in `requirements.txt` (`requests`, `pytz`).
+- A **cookie file**: a JSON array exported from a logged-in x.com browser session. Each entry needs `name`, `value` and `domain`; only cookies for `.x.com`, `.twitter.com`, `x.com` and `twitter.com` are used (`ct0` is used as the CSRF token and `auth_token` is sent when present).
+- A **users file**: the list of accounts to block (see below).
 
 ```bash
-# 1. テスト実行（最初の5人のみ）
+pip install -r requirements.txt
+```
+
+## Quick start
+
+Outside Docker, first point the cache at a writable directory (every run that gets past argument parsing and the file checks, so not `--help` or `--version`, creates it on start; the default is `/data/cache`): `export CACHE_DIR=./cache`.
+
+> **Warning:** running without `--all` is not a dry run. It really blocks the first 5 remaining users.
+
+```bash
+# Process the first 5 remaining users (test mode)
 python3 -m twitter_blocker
 
-# 2. 統計表示
+# Show progress statistics
 python3 -m twitter_blocker --stats
 
-# 3. 本格実行
+# Process every remaining user
 python3 -m twitter_blocker --all
 
-# 4. 自動リトライ付き本格実行
+# Process every remaining user, then retry the failures
 python3 -m twitter_blocker --all --auto-retry
 
-# 5. 特定ユーザーのテスト
+# Look up one user without blocking (prints ID, name and follow relationship)
 python3 -m twitter_blocker --test-user example_user
 
-# 6. デバッグモードで実行
+# Same lookup, with the raw API responses
 python3 -m twitter_blocker --debug --test-user example_user
 
-# 7. バージョン確認
+# Print the version
 python3 -m twitter_blocker --version
 ```
 
-## 📋 ユーザーファイル形式
+More command lines are in [examples.md](examples.md).
 
-ユーザーファイルは以下の形式で指定してください：
+## Users file
 
-### スクリーンネーム形式
+JSON with a `format` (`screen_name` or `user_id`) and a non-empty `users` list of strings.
 
 ```json
 {
   "format": "screen_name",
-  "users": [
-    "example_user",
-    "another_user",
-    "spam_account"
-  ]
+  "users": ["example_user", "another_user"]
 }
 ```
-
-### ユーザーID形式
 
 ```json
 {
   "format": "user_id",
-  "users": [
-    "1316469127914029057",
-    "1234567890123456789",
-    "9876543210987654321"
-  ]
+  "users": ["1316469127914029057", "1234567890123456789"]
 }
 ```
 
-## ⚙️ コマンドオプション
+The default path is `video_misuse_detecteds.json` in the current directory.
 
-### 実行制御
+## Command-line options
 
-- `--all` - 全ユーザーを処理（本格実行）
-- `--retry` - 失敗したユーザーのリトライ処理のみ実行
-- `--auto-retry` - `--all`と組み合わせて使用：実行後に自動でリトライ
-- `--reset-retry` - 失敗ユーザーのリトライ回数をリセット
-- `--stats` - 処理統計を表示
+### Execution
 
-### 処理制御
+| Option | Description |
+|---|---|
+| `--all` | Process all remaining users. Without it, only the first 5 remaining users are processed. |
+| `--retry` | Re-check users whose block failed with a retryable error (see [Known limitations](#known-limitations)). |
+| `--auto-retry` | With `--all`: run the retry pass after the main run. |
+| `--reset-retry` | Reset the retry counter of failed users. |
+| `--clear-errors` | Clear the stored error messages of failed users. |
+| `--reset-failed` | Fully reset failed users (error message, retry count, response code, user status). |
+| `--stats` | Print processing statistics and exit. |
 
-- `--max-users N` - 処理するユーザーの最大数を指定
-- `--delay N` - リクエスト間隔を秒で指定（デフォルト: 1.0）
+### Limits
 
-### デバッグ・テスト機能
+| Option | Description |
+|---|---|
+| `--max-users N` | Process at most N users (also limits `--retry`). Ignored in test mode, which always uses 5. |
+| `--delay SECONDS` | Delay between requests (default `1.0`). For `user_id` files it is applied between batches of 50, for `screen_name` files after each block. |
 
-- `--debug` - デバッグモードで実行（詳細なAPI応答を表示）
-- `--test-user SCREEN_NAME` - 特定のユーザーのみテスト（デバッグ用）
-- `--debug-errors` - 失敗したエラーメッセージのサンプルを表示（デバッグ用）
-- `--version` - アプリケーションのバージョン情報を表示
+### Debugging
 
-### 🔒 拡張ヘッダー機能（セキュリティ向上）
+| Option | Description |
+|---|---|
+| `--debug` | Print detailed API responses. |
+| `--test-user SCREEN_NAME` | Look up a single user and exit. Nothing is blocked. |
+| `--debug-errors` | Print up to 20 stored error-message samples. |
+| `--version` | Print the version. |
 
-- `--disable-header-enhancement` - 拡張ヘッダー生成を無効化（緊急時用）
-- `--enable-forwarded-for` - x-xp-forwarded-forヘッダーの生成を有効化（試験的機能）
+### Request headers
 
-**拡張ヘッダーの詳細:**
-- **x-client-transaction-id**: 動的トランザクションID（デフォルト有効）
-- **x-xp-forwarded-for**: 日本主要ISP範囲のIP生成（NTT/KDDI/SoftBank/IIJ/So-net、オプション機能）
+| Option | Description |
+|---|---|
+| `--disable-header-enhancement` | Do not add the generated headers (`x-client-transaction-id`, `x-client-uuid`, `x-request-id`). |
+| `--enable-forwarded-for` | Also send a generated `x-xp-forwarded-for` header (experimental). |
 
-**デバッグ機能の使用例:**
+### Paths
 
-```bash
-# 特定ユーザーのAPI応答を詳細確認
-python3 -m twitter_blocker --debug --test-user problematic_user
+| Option | Environment variable | Default |
+|---|---|---|
+| `--cookies PATH` | `TWITTER_COOKIES_PATH` | `cookies.json` |
+| `--users-file PATH` | `TWITTER_USERS_FILE` | `video_misuse_detecteds.json` |
+| `--db PATH` | `TWITTER_BLOCK_DB` | `block_history.db` |
+| `--cache-dir PATH` | `CACHE_DIR` | `/data/cache` |
 
-# エラーメッセージの実例を確認
-python3 -m twitter_blocker --debug-errors
+A command-line option overrides the environment variable, which overrides the default. The default cache directory `/data/cache` is created on start, so outside Docker point `CACHE_DIR` at a writable directory (for example `./cache`). `.env.example` lists the variables; the tool does not read `.env` itself, so load it into the environment first (`set -a; source .env; set +a`).
 
-# デバッグモードで本格実行
-python3 -m twitter_blocker --all --debug --max-users 10
+The cookie and users files are only checked up front for runs that block (`--all`, test mode); `--stats`, `--retry`, `--test-user`, `--debug-errors` and the reset commands start without that check.
 
-# 拡張ヘッダー機能のテスト
-python3 -m twitter_blocker --test-user "username" --debug --enable-forwarded-for
+## Docker
+
+The image runs `python3 -m twitter_blocker` as user `appuser` (UID 1000) and defaults to `--help`. It presets:
+
+```
+TWITTER_COOKIES_PATH=/data/cookies.json
+TWITTER_USERS_FILE=/data/users.json
+TWITTER_BLOCK_DB=/data/block_history.db
+CACHE_DIR=/data/cache
 ```
 
-### ファイル・ディレクトリ指定
-
-- `--cookies PATH` - クッキーファイルのパス（デフォルト: cookies.json）
-- `--users-file PATH` - ブロック対象ユーザーファイルのパス（デフォルト: video_misuse_detecteds.json）
-- `--db PATH` - ブロック履歴データベースのパス（デフォルト: block_history.db）
-- `--cache-dir PATH` - キャッシュディレクトリのパス（デフォルト: /data/cache）
-
-## 🔧 設定方法
-
-### 1. コマンド引数で指定
+Mount a host directory at `/data` that is writable by UID 1000 and contains `cookies.json` and `users.json`:
 
 ```bash
-python3 -m twitter_blocker --all \
-  --cookies /path/to/cookies.json \
-  --users-file /path/to/users.json \
-  --db /path/to/database.db \
-  --cache-dir /path/to/cache
-```
-
-### 2. 環境変数で指定
-
-```bash
-export TWITTER_COOKIES_PATH=/path/to/cookies.json
-export TWITTER_USERS_FILE=/path/to/users.json
-export TWITTER_BLOCK_DB=/path/to/database.db
-export CACHE_DIR=/path/to/cache
-
-python3 -m twitter_blocker --all
-```
-
-### 3. 設定ファイルの優先順位
-
-1. **コマンド引数**（最優先）
-2. **環境変数**
-3. **デフォルト値**
-
-### 4. 推奨設定パターン
-
-**開発・テスト環境:**
-```bash
-export CACHE_DIR=./cache
-export TWITTER_COOKIES_PATH=./cookies.json
-export TWITTER_USERS_FILE=./test_users.json
-```
-
-**本番環境:**
-```bash
-export CACHE_DIR=/var/lib/twitter-blocker/cache
-export TWITTER_COOKIES_PATH=/etc/twitter-blocker/cookies.json
-export TWITTER_USERS_FILE=/var/lib/twitter-blocker/users.json
-export TWITTER_BLOCK_DB=/var/lib/twitter-blocker/database.db
-```
-
-## 🐳 Docker使用方法
-
-### 基本実行
-
-```bash
-# イメージビルド
 docker build -t twitter-blocker .
 
-# ヘルプ表示
-docker run --rm twitter-blocker
-
-# 統計表示（データマウント必要）
-docker run --rm -v ./data:/app/data twitter-blocker --stats
-
-# 本格実行
-docker run --rm -v ./data:/app/data twitter-blocker --all --auto-retry
-
-# デバッグモードでテスト
-docker run --rm -v ./data:/app/data twitter-blocker --debug --test-user example_user
+docker run --rm -v "$(pwd)/data:/data" twitter-blocker --stats
+docker run --rm -v "$(pwd)/data:/data" twitter-blocker --all --auto-retry
+docker run --rm -v "$(pwd)/data:/data" twitter-blocker --debug --test-user example_user
 ```
 
-### Docker環境変数
-
-Docker環境では以下の環境変数が事前設定されています：
-
-- `TWITTER_COOKIES_PATH=/data/cookies.json`
-- `TWITTER_USERS_FILE=/data/users.json`
-- `TWITTER_BLOCK_DB=/data/block_history.db`
-- `CACHE_DIR=/data/cache`
-
-### カスタム設定でDocker実行
+Override a path by setting the variable and mounting accordingly:
 
 ```bash
-# 環境変数をオーバーライド
 docker run --rm \
-  -v ./data:/app/data \
-  -e CACHE_DIR=/app/data/custom_cache \
-  -e TWITTER_USERS_FILE=/app/data/my_users.json \
-  twitter-blocker --all
-
-# ローカルディレクトリを別の場所にマウント
-docker run --rm \
-  -v ./cookies:/app/cookies:ro \
-  -v ./data:/app/data \
-  -e TWITTER_COOKIES_PATH=/app/cookies/cookies.json \
+  -v "$(pwd)/data:/data" \
+  -v "$(pwd)/cookies:/cookies:ro" \
+  -e TWITTER_COOKIES_PATH=/cookies/cookies.json \
   twitter-blocker --stats
 ```
 
-### Docker Compose
+Docker Compose:
 
 ```yaml
-version: '3.8'
 services:
   twitter-blocker:
     build: .
     volumes:
-      - ./data:/app/data
-    environment:
-      - CACHE_DIR=/app/data/cache
-      - TWITTER_COOKIES_PATH=/app/data/cookies.json
-      - TWITTER_USERS_FILE=/app/data/users.json
-      - TWITTER_BLOCK_DB=/app/data/database.db
+      - ./data:/data
     command: ["--stats"]
 ```
 
 ```bash
-# 実行
-docker-compose run twitter-blocker
+docker compose run --rm twitter-blocker
 ```
 
-## 🛡️ 安全機能
+On SELinux hosts add `:Z` to the volume. The `APPLICATION_VERSION` build argument embeds a version string (CI sets it); without it the version is resolved at runtime (see `twitter_blocker/version.py`).
 
-### 重複防止システム
+## How it works
 
-- **SQLiteデータベース**による永続的な履歴管理
-- 一度ブロックしたユーザーは再度ブロックしない
-- ユニークキー制約による重複実行の防止
+1. Load the users file and validate its schema.
+2. Skip users already blocked according to the block history.
+3. Look users up in batches of 50 through GraphQL (`UsersByRestIds` for IDs, `UserByScreenName` for screen names), using the file cache first.
+4. Skip users that are unavailable (`suspended`, `not_found`, `deactivated`), that you follow or who follow you, or that you already block.
+5. Block the rest through the REST API and record the result (status, HTTP code, error message, retry count) in the `block_history` table.
+6. Failed users with a retryable error become retry candidates.
 
-### 高度な自動リトライ機能
+Cache layout under `CACHE_DIR`: `lookups/` (screen name to user ID), `profiles/` (basic profile fields) and `relationships/<login user ID>/` (follow and block state, per logged-in account). Entries expire after 30 days.
 
-- **一時的エラーの自動検出**: 429（レート制限）、500、502、503、504
-- **指数バックオフ**によるリトライ間隔の調整
-- **最大10回**までのリトライ制限
-- **suspendedユーザーの除外**: 永続的な失敗として扱い、リトライしない
-- **リトライ統計の詳細表示**: 成功/失敗の詳細分析
+### Error handling
 
-### 包括的安全性チェック
+- Permanent user states (`suspended`, `not_found`, `deactivated`) are not retried.
+- The temporary state `unavailable` and HTTP 429, 500, 502, 503 and 504 failures become `--retry` candidates, up to 10 attempts, each waiting at least 30 seconds × 2^(previous attempts) since the last attempt. A failure is also a candidate when its HTTP code is empty or its stored message contains `temporarily`, `rate limit`, `timeout`, `server error` or `ユーザー情報取得失敗` (user lookup failed).
+- HTTP 403 responses are classified (rate limit, account lock, "Unknown error", ...) in the log output only; the class is not stored. A failed block is recorded with its HTTP code and the message `Unknown error`, so a 403 failure is not a `--retry` candidate (403 is not in the code list and that message matches none of the patterns above). The `(permanent)` message suffix is only written for `suspended`, `not_found` and `deactivated` accounts.
+- On authentication errors (401) the tool waits for the cookie file to change (up to 1 hour on the first attempt, 30 seconds on later ones), reloads it and retries; if the file did not change, it retries with the existing cookies. It exits after 10 failed attempts.
 
-- **フォロー関係の検証**: フォロー中/フォロワーのユーザーは自動スキップ
-- **既存ブロック状態の確認**: 重複ブロックを防止
-- **ユーザー状態の詳細判定**: active/suspended/deactivated/not_found
-- **API応答の詳細検証**: 各種エラータイプの適切な処理
+## Statistics output
 
-### パフォーマンス最適化
-
-- **APIキャッシュシステム**: ユーザー情報とリレーション情報の効率的キャッシュ
-- **バッチ処理**: 複数ユーザーの一括取得でAPI効率化
-- **レート制限の遵守**: 適切な間隔でのAPI呼び出し
-
-## 📊 詳細な統計・デバッグ機能
-
-### 統計表示機能
-
-```bash
-$ python3 -m twitter_blocker --stats
-=== 処理統計 ===
-全対象ユーザー: 2,308人
-ブロック済み: 1,245人 (53.9%)
-残り未処理: 1,063人
-失敗: 12人
-  - リトライ上限到達: 2人
-  - リトライ可能: 3人
-  - エラータイプ別:
-    suspended: 8人
-    unavailable: 4人
-  - エラーメッセージサンプル (other):
-    1. User not found
-    2. Rate limit exceeded
-    3. Authentication required
-
-リトライ候補: 3人
-  - unavailable: 3人
-```
-
-### エラー分析機能
-
-```bash
-# 失敗したエラーの詳細分析
-python3 -m twitter_blocker --debug-errors
-
-=== エラーメッセージサンプル ===
- 1. User account is suspended
- 2. Rate limit exceeded. Try again later
- 3. The following features cannot be null: rweb_tipjar_consumption_enabled
- 4. User not found
- 5. Authentication credentials were invalid
-```
-
-### デバッグモード
-
-```bash
-# 特定ユーザーの詳細分析
-python3 -m twitter_blocker --debug --test-user problematic_user
-
-=== テストユーザー: problematic_user ===
-[API Response - get_user_info] problematic_user
-  Status Code: 200
-  Rate Limit: 144/150
-  Reset Time: 2025-06-18 08:15:49 JST
-  Response Headers:
-    content-type: application/json; charset=utf-8
-    x-rate-limit-limit: 150
-    x-rate-limit-remaining: 144
-  Response Body: {"data": {"user": {"result": {...}}}}
-
-ユーザー情報取得成功:
-  ID: 982085873788489728
-  名前: Example User
-  フォロー関係: False
-  フォロワー関係: False
-  ブロック状態: True
-```
-
-## 🔄 処理フロー
-
-### 通常の処理フロー
-
-1. **設定検証** - ファイル存在確認と環境変数読み込み
-2. **スキーマ検証** - ユーザーファイル形式の確認
-3. **キャッシュ初期化** - ディレクトリ作成とキャッシュ準備
-4. **ユーザー情報取得** - GraphQL APIでユーザー状態確認
-5. **安全性チェック** - フォロー関係とユーザー状態を確認
-6. **ブロック実行** - REST APIでブロック処理
-7. **結果記録** - SQLiteデータベースに履歴保存
-8. **リトライ判定** - 失敗時にリトライ対象かどうか判定
-
-### API最適化フロー
-
-1. **キャッシュ確認**: 既存のキャッシュデータをチェック
-2. **バッチ処理**: 複数ユーザーの情報を一括取得
-3. **レート制限管理**: API制限を監視し適切な間隔で実行
-4. **エラーハンドリング**: 各種エラータイプに応じた適切な処理
-
-## 🛠️ トラブルシューティング
-
-### よくある問題と解決方法
-
-#### アカウントロック（エラー326）
-
-X.comでアカウントのロックを解除してから再実行してください:
-<https://twitter.com/account/access>
-
-#### クッキーの有効期限切れ
+`--stats` prints Japanese labels. An abridged example with translations in the comments:
 
 ```
-Error: Authentication credentials were invalid
+=== 処理統計 ===                  # Processing statistics
+全対象ユーザー: 2,308人            # Total target users
+ブロック済み: 1,245人              # Blocked
+...
+失敗: 12人                         # Failed
+  - リトライ上限到達: 2人          # Reached the retry limit
+  - リトライ可能: 3人              # Retryable
+リトライ候補: 3人                  # Retry candidates
 ```
 
-X.comで再ログインしてcookies.jsonを更新してください。
+All runtime output (progress, errors) is Japanese. Operations scripts under `.claude/` parse some of these lines, so the strings are kept as they are.
 
-#### レート制限（エラー429）
+## Troubleshooting
 
-```bash
-# リクエスト間隔を長くする
-python3 -m twitter_blocker --all --delay 2.0
+| Symptom | What to do |
+|---|---|
+| Account locked (error 326) | Unlock the account at <https://twitter.com/account/access>, then run again. |
+| HTTP 401 / authentication errors (log line `認証エラー検出`) | The cookies expired. Log in again, export a new cookie file and replace it; a running process picks up the change. |
+| Rate limited (429) | The tool waits automatically. Use `--delay 2.0` or process in smaller chunks with `--max-users 50`. |
+| Users file rejected | Check the [schema](#users-file): `format` is `screen_name` or `user_id`, `users` is a non-empty list. |
+| Cache directory permission error | Create a writable directory and set `CACHE_DIR` to it. |
+| Docker cannot write `/data` | The container user is UID 1000: make the host directory writable by it. |
 
-# または少数ずつ処理
-python3 -m twitter_blocker --all --max-users 50
-```
+To investigate failures: `python3 -m twitter_blocker --debug-errors`, then `python3 -m twitter_blocker --debug --test-user <name>`, then a small run such as `python3 -m twitter_blocker --debug --max-users 5` (which, like any run without `--all`, really blocks users).
 
-#### GraphQL APIエラー（400エラー）
-
-最新のTwitter GraphQL APIの要求により、必須フィーチャーフラグが追加されています。このツールは最新の要求に対応済みです。
-
-#### ファイル形式エラー
-
-ユーザーファイルが正しい形式になっているか確認してください:
-
-```json
-{
-  "format": "screen_name",
-  "users": ["user1", "user2", "user3"]
-}
-```
-
-#### キャッシュディレクトリのアクセス権限エラー
-
-```bash
-# ディレクトリの作成・権限設定
-mkdir -p /path/to/cache
-chmod 755 /path/to/cache
-
-# または環境変数で別の場所を指定
-export CACHE_DIR=./cache
-```
-
-#### Docker環境でのファイルアクセス問題
-
-```bash
-# ボリュームマウントと権限の確認
-docker run --rm -v $(pwd)/data:/app/data:rw twitter-blocker --stats
-
-# SELinux環境での場合
-docker run --rm -v $(pwd)/data:/app/data:Z twitter-blocker --stats
-```
-
-### デバッグ手順
-
-1. **問題の特定**:
-   ```bash
-   python3 -m twitter_blocker --debug-errors
-   ```
-
-2. **特定ユーザーでのテスト**:
-   ```bash
-   python3 -m twitter_blocker --debug --test-user problematic_user
-   ```
-
-3. **少数での動作確認**:
-   ```bash
-   python3 -m twitter_blocker --debug --max-users 5
-   ```
-
-4. **ログの詳細確認**: デバッグモードで詳細なAPI応答を確認
-
-## 📁 プロジェクト構造
+## Project layout
 
 ```text
-twitter-bulk-blocker/
-├── twitter_blocker/          # メインパッケージ
-│   ├── __init__.py           # パッケージ初期化
-│   ├── __main__.py           # 実行エントリーポイント
-│   ├── api.py                # Twitter API管理（GraphQL/REST）
-│   ├── config.py             # 設定・クッキー管理
-│   ├── database.py           # SQLiteデータベース管理
-│   ├── manager.py            # 一括ブロック管理
-│   ├── retry.py              # リトライ判定ロジック
-│   └── stats.py              # 統計表示・エラー分析
-├── Dockerfile                # Docker設定
-├── docker-compose.yml        # Docker Compose設定
-├── requirements.txt          # 依存関係
-├── .gitignore               # Git除外設定
-├── examples.md              # 使用例とサンプル
-└── README.md                # このファイル
+twitter_blocker/
+├── __main__.py            # CLI entry point (argparse)
+├── api.py                 # GraphQL/REST client, file cache, request headers, error recovery
+├── config.py              # Users-file schema and cookie loading
+├── database.py            # SQLite block history, failure queries
+├── manager.py             # BulkBlockManager: batching, safety checks, retries
+├── retry.py               # Failure classification and backoff
+├── stats.py               # --stats output
+├── error_analytics.py     # Error analytics tables and reports
+├── performance_monitor.py # Performance metrics tables
+├── user_status_monitor.py # Account-status tracking tables
+└── version.py             # Version resolution
+.claude/                   # Claude Code commands and docs for operating the production deployment
+Dockerfile
+examples.md
+requirements.txt
 ```
 
-## 🔧 開発者向け情報
+## Known limitations
 
-### API設計
+- `--retry` and the retry pass of `--auto-retry` only repeat the user lookup for failed users; they do not send the block request again (see `_process_retry_user` in `manager.py`).
 
-- **GraphQL API**: ユーザー情報取得、関係性確認
-- **REST API**: ブロック実行
-- **キャッシュシステム**: 効率的なAPI利用
-- **エラーハンドリング**: 包括的なエラータイプ分類
+## Notes
 
-### 拡張可能性
-
-- モジュール分離設計による機能追加の容易さ
-- 設定システムの柔軟性
-- デバッグ機能の充実
-- 統計・分析機能の詳細性
-
-## ⚠️ 注意事項・ベストプラクティス
-
-### 必須の安全対策
-
-1. **テスト実行を推奨**: 最初は必ずテストモードで動作確認
-2. **レート制限遵守**: APIレート制限を避けるため、適切な間隔で処理
-3. **フォロー関係の尊重**: フォロー中/フォロワーのユーザーは自動的にスキップ
-4. **データベース管理**: ブロック履歴はSQLiteで永続化され、重複を防止
-5. **リトライ機能の理解**: 一時的エラーは自動リトライ、suspendedは除外
-
-### 推奨運用方法
-
-- **段階的実行**: 少数ずつテストしてから本格実行
-- **統計の定期確認**: `--stats`での進捗状況の把握
-- **エラー分析**: `--debug-errors`での問題の早期発見
-- **環境変数の活用**: 設定の外部化によるセキュリティ向上
-
-### 法的・倫理的考慮事項
-
-- Twitter/X.comの利用規約を遵守してください
-- 過度なAPI利用は避け、適切な間隔での実行を心がけてください
-- 本ツールの使用は自己責任で行ってください
-
----
-
-## 🤝 コントリビューション
-
-バグ報告、機能リクエスト、プルリクエストを歓迎します。
-
-## 📜 ライセンス
-
-本プロジェクトは適切なライセンスの下で公開されています。詳細はLICENSEファイルをご確認ください。
+- Follow the Twitter/X terms of service and keep the request rate moderate. Use at your own risk.
+- Never commit `cookies.json`, user lists or database files; they are git-ignored.
+- Bug reports and pull requests are welcome. The repository has no `LICENSE` file.

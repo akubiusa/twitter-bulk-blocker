@@ -33,7 +33,7 @@ RUN mkdir -p /app/data && \
 COPY --chown=appuser:appuser twitter_blocker/ ./twitter_blocker/
 COPY --chown=appuser:appuser README.md examples.md ./
 
-# バージョン情報をイメージに埋め込み（CI/CDで設定される場合）
+# Embed the version in the image when CI passes APPLICATION_VERSION
 ARG APPLICATION_VERSION
 RUN if [ -n "$APPLICATION_VERSION" ]; then \
         echo "$APPLICATION_VERSION" > .app-version && \

@@ -1,176 +1,99 @@
-# 使用例集
+# Examples
 
-## 基本的な使用方法
+Command lines for `python3 -m twitter_blocker`. See [README.md](README.md) for all options. Replace the paths with your own.
 
-### 1. デフォルトファイルでテスト実行
+> Running without `--all` is not a dry run: it blocks the first 5 remaining users.
+
+## Basic runs
 
 ```bash
-python3 main.py
+# Test mode: process the first 5 remaining users
+python3 -m twitter_blocker
+
+# Process all remaining users
+python3 -m twitter_blocker --all
+
+# Process all remaining users, then retry the failures
+python3 -m twitter_blocker --all --auto-retry
 ```
 
-### 2. デフォルトファイルで本格実行
+## Choosing files
 
 ```bash
-python3 main.py --all
-```
-
-### 3. 自動リトライ付き本格実行
-
-```bash
-python3 main.py --all --auto-retry
-```
-
-## ファイルパス指定
-
-### 4. 絶対パスで指定
-
-```bash
-python3 main.py --all \
+# Absolute paths
+python3 -m twitter_blocker --all \
   --cookies /home/user/twitter/cookies.json \
   --users-file /home/user/twitter/block_targets.json \
   --db /home/user/twitter/block_history.db
-```
 
-### 5. 相対パスで指定
-
-```bash
-python3 main.py --all \
+# Relative paths
+python3 -m twitter_blocker --all \
   --cookies ./data/cookies.json \
   --users-file ./data/users.json \
   --db ./data/history.db
-```
 
-### 6. 環境変数で指定
-
-```bash
+# Environment variables
 export TWITTER_COOKIES_PATH=/home/user/twitter/cookies.json
 export TWITTER_USERS_FILE=/home/user/twitter/users.json
 export TWITTER_BLOCK_DB=/home/user/twitter/history.db
-
-python3 main.py --all --auto-retry
+export CACHE_DIR=/home/user/twitter/cache
+python3 -m twitter_blocker --all --auto-retry
 ```
 
-## 処理制御
-
-### 7. 最大100人まで処理
+## Limits and pacing
 
 ```bash
-python3 main.py --all --max-users 100
+# At most 100 users
+python3 -m twitter_blocker --all --max-users 100
+
+# 2 seconds between requests
+python3 -m twitter_blocker --all --delay 2.0
+
+# Careful run: 3 seconds between requests, at most 50 users
+python3 -m twitter_blocker --all --delay 3.0 --max-users 50
+
+# Retry failed users only
+python3 -m twitter_blocker --retry
+
+# Show statistics
+python3 -m twitter_blocker --stats
 ```
 
-### 8. 処理間隔を2秒に設定
+## Debugging
 
 ```bash
-python3 main.py --all --delay 2.0
+# Look up one user without blocking
+python3 -m twitter_blocker --debug --test-user example_user
+
+# Show samples of stored error messages
+python3 -m twitter_blocker --debug-errors
+
+# Process at most 5 users with detailed output (this blocks them)
+python3 -m twitter_blocker --debug --max-users 5
+
+# Missing cookie file: the tool prints an error and exits with status 1
+python3 -m twitter_blocker --all --cookies ./nonexistent.json
 ```
 
-### 9. リトライのみ実行
-
-```bash
-python3 main.py --retry
-```
-
-### 10. 統計情報表示
-
-```bash
-python3 main.py --stats
-```
-
-## 複合的な使用例
-
-### 11. 高速処理（0.5秒間隔）
-
-```bash
-python3 main.py --all --delay 0.5 --auto-retry
-```
-
-### 12. 慎重な処理（3秒間隔、最大50人）
-
-```bash
-python3 main.py --all --delay 3.0 --max-users 50
-```
-
-### 13. カスタムファイルでテスト
-
-```bash
-python3 main.py \
-  --cookies ./test_cookies.json \
-  --users-file ./test_users.json \
-  --db ./test_history.db \
-  --max-users 5
-```
-
-### 14. バックアップデータベースを使用
-
-```bash
-python3 main.py --all \
-  --db ./backup/block_history_$(date +%Y%m%d).db \
-  --auto-retry
-```
-
-## エラー対処例
-
-### 15. ファイル不存在エラーのテスト
-
-```bash
-python3 main.py --cookies ./nonexistent.json
-# ❌ エラー: クッキーファイルが見つかりません: ./nonexistent.json
-```
-
-### 16. 環境変数の確認
-
-```bash
-echo "TWITTER_COOKIES_PATH: $TWITTER_COOKIES_PATH"
-echo "TWITTER_USERS_FILE: $TWITTER_USERS_FILE"
-echo "TWITTER_BLOCK_DB: $TWITTER_BLOCK_DB"
-```
-
-## バッチ処理例
-
-### 17. シェルスクリプトでの自動化
+## Scripting
 
 ```bash
 #!/bin/bash
 # batch_block.sh
-
-# 設定
 export TWITTER_COOKIES_PATH=/home/user/twitter/cookies.json
 export TWITTER_USERS_FILE=/home/user/twitter/block_targets.json
 export TWITTER_BLOCK_DB=/home/user/twitter/block_history.db
+export CACHE_DIR=/home/user/twitter/cache
 
-# 実行前統計
-echo "=== 実行前統計 ==="
-python3 main.py --stats
-
-# メイン処理
-echo "=== メイン処理開始 ==="
-python3 main.py --all --auto-retry --delay 1.5
-
-# 実行後統計
-echo "=== 実行後統計 ==="
-python3 main.py --stats
-
-echo "=== 処理完了 ==="
+python3 -m twitter_blocker --stats
+python3 -m twitter_blocker --all --auto-retry --delay 1.5
+python3 -m twitter_blocker --stats
 ```
 
-### 18. cron で定期実行
+Run it from cron, for example every day at 02:00:
 
-```bash
-# crontab -e で以下を追加
-# 毎日午前2時に実行
-0 2 * * * cd /path/to/twitter-block && python3 main.py --retry >> /var/log/twitter-block.log 2>&1
+```cron
+0 2 * * * cd /path/to/twitter-bulk-blocker && python3 -m twitter_blocker --all --auto-retry >> /var/log/twitter-block.log 2>&1
 ```
 
-## デバッグ・トラブルシューティング
-
-### 19. ファイルパス確認
-
-```bash
-python3 main.py --stats --cookies ./cookies.json --users-file ./users.json --db ./test.db
-```
-
-### 20. 最小限テスト（1人のみ）
-
-```bash
-python3 main.py --max-users 1 --delay 5.0
-```
+Keep a copy of the database before large runs, for example `cp block_history.db backup/block_history_$(date +%Y%m%d).db`.
