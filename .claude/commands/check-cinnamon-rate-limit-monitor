@@ -1,14 +1,13 @@
 #!/bin/bash
 
-# check-cinnamon-rate-limit-monitor - レートリミット監視・予測分析モジュール
-# 待機時間の追跡と処理再開時刻の予測
+# check-cinnamon-rate-limit-monitor - rate limit monitoring and resume-time prediction
 
 set -e
 
 echo "⏰ RATE LIMIT MONITORING & PREDICTION"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# コンテナリスト
+# Container list
 containers=("book000" "ihc_amot" "book000_vrc" "authorizedkey" "tomachi_priv" "tomarabbit")
 current_time=$(date '+%s')
 current_time_readable=$(date '+%Y-%m-%d %H:%M:%S')
@@ -24,7 +23,7 @@ rate_limited=0
 for container in "${containers[@]}"; do
     container_name="bulk-block-users-${container}-1"
     
-    # コンテナ状態確認
+    # Check container state
     is_running=$(ssh Cinnamon "docker ps --filter name=$container_name --format '{{.Names}}' | wc -l" 2>/dev/null || echo "0")
     
     if [ "$is_running" -eq 0 ]; then
@@ -32,14 +31,14 @@ for container in "${containers[@]}"; do
         continue
     fi
     
-    # 最近のログからレートリミット情報を取得
+    # Rate limit info from recent logs
     recent_logs=$(ssh Cinnamon "docker logs $container_name --since 10m 2>/dev/null | tail -20" || echo "")
     
-    # レートリミット検出
+    # Detect rate limit
     rate_limit_info=$(echo "$recent_logs" | grep -E "(レートリミット検出|Rate limit exceeded|リセット時刻)" | tail -3)
     
     if [[ "$rate_limit_info" == *"レートリミット検出"* ]]; then
-        # 待機時間抽出
+        # Extract wait time
         wait_time=$(echo "$rate_limit_info" | grep "レートリミット検出" | grep -o "[0-9.]*分間" | head -1)
         reset_time=$(echo "$recent_logs" | grep "リセット時刻:" | tail -1 | sed 's/.*リセット時刻: //')
         
@@ -47,7 +46,7 @@ for container in "${containers[@]}"; do
         echo "   待機時間: $wait_time"
         echo "   解除予定: $reset_time"
         
-        # 解除時刻の計算
+        # Compute release time
         if [ -n "$reset_time" ]; then
             reset_timestamp=$(date -d "$reset_time" '+%s' 2>/dev/null || echo "0")
             if [ "$reset_timestamp" -gt 0 ]; then
@@ -85,14 +84,14 @@ for container in "${containers[@]}"; do
     echo ""
 done
 
-# サマリー表示
+# Summary
 echo "📈 PROCESSING SUMMARY"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "アクティブ処理: $active_processing コンテナ"
 echo "Cookie更新中: $total_waiting コンテナ"
 echo "レートリミット: $rate_limited コンテナ"
 
-# 処理予測
+# Prediction
 if [ "$rate_limited" -gt 0 ]; then
     echo ""
     echo "🔮 PROCESSING PREDICTION"
@@ -101,7 +100,7 @@ if [ "$rate_limited" -gt 0 ]; then
     echo "Cookie更新完了後、複数コンテナが同時処理開始予定"
 fi
 
-# 効率性評価
+# Efficiency assessment
 if [ "$active_processing" -gt 0 ]; then
     efficiency="高効率"
 elif [ "$total_waiting" -gt 2 ]; then
@@ -115,7 +114,7 @@ fi
 echo ""
 echo "📊 システム効率性: $efficiency"
 
-# 推奨アクション
+# Recommended actions
 echo ""
 echo "💡 RECOMMENDED MONITORING"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

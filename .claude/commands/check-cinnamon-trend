@@ -1,7 +1,6 @@
 #!/bin/bash
 
-# check-cinnamon-trend - 403エラー改善トレンド分析機能
-# 時系列でのエラー数変化を検出し、改善・悪化傾向を判定
+# check-cinnamon-trend - 403 error trend analysis (improving vs worsening)
 
 set -e
 
@@ -9,7 +8,7 @@ echo "=== CINNAMON SERVER TREND ANALYSIS ==="
 echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
 echo ""
 
-# SSH接続確認
+# Verify SSH connectivity
 if ! ssh -o ConnectTimeout=5 -o BatchMode=yes Cinnamon true 2>/dev/null; then
     echo "❌ Cinnamonサーバーへの接続に失敗しました"
     exit 1
@@ -18,32 +17,32 @@ fi
 echo "🔍 403ERROR TREND ANALYSIS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 各コンテナの403エラートレンド分析
+# 403 error trend per container
 containers=("book000" "ihc_amot" "book000_vrc" "authorizedkey" "tomachi_priv" "tomarabbit")
 
 for container in "${containers[@]}"; do
     container_name="bulk-block-users-${container}-1"
     
-    # 各時間窓でのエラー数をカウント
+    # Error count per time window
     errors_1m=$(ssh Cinnamon "docker logs $container_name --since 1m 2>/dev/null | grep -c '🚨.*403エラー.*回検出'" 2>/dev/null || echo 0)
     errors_5m=$(ssh Cinnamon "docker logs $container_name --since 5m 2>/dev/null | grep -c '🚨.*403エラー.*回検出'" 2>/dev/null || echo 0)
     errors_10m=$(ssh Cinnamon "docker logs $container_name --since 10m 2>/dev/null | grep -c '🚨.*403エラー.*回検出'" 2>/dev/null || echo 0)
     errors_30m=$(ssh Cinnamon "docker logs $container_name --since 30m 2>/dev/null | grep -c '🚨.*403エラー.*回検出'" 2>/dev/null || echo 0)
     
-    # 数値チェック
+    # Numeric check
     [ -z "$errors_1m" ] && errors_1m=0
     [ -z "$errors_5m" ] && errors_5m=0
     [ -z "$errors_10m" ] && errors_10m=0
     [ -z "$errors_30m" ] && errors_30m=0
     
-    # 成功処理数もカウント
+    # Success count
     success_10m=$(ssh Cinnamon "docker logs $container_name --since 10m 2>/dev/null | grep -c '✓.*ブロック成功'" 2>/dev/null || echo 0)
     reset_10m=$(ssh Cinnamon "docker logs $container_name --since 10m 2>/dev/null | grep -c '📉.*エラーカウンターリセット'" 2>/dev/null || echo 0)
     
     [ -z "$success_10m" ] && success_10m=0
     [ -z "$reset_10m" ] && reset_10m=0
     
-    # トレンド判定
+    # Trend classification
     if [ "$errors_1m" -eq 0 ] && [ "$errors_5m" -eq 0 ]; then
         status="✅ STABLE"
         trend="安定稼働中"
@@ -61,7 +60,7 @@ for container in "${containers[@]}"; do
         trend="変動中"
     fi
     
-    # 結果表示
+    # Print result
     printf "📊 %-15s %s (%s)\n" "$container:" "$status" "$trend"
     printf "   時系列: 1分=%d件, 5分=%d件, 10分=%d件, 30分=%d件\n" "$errors_1m" "$errors_5m" "$errors_10m" "$errors_30m"
     
@@ -69,7 +68,7 @@ for container in "${containers[@]}"; do
         printf "   回復力: 成功処理=%d件, リセット=%d件 (過去10分)\n" "$success_10m" "$reset_10m"
     fi
     
-    # 改善提案
+    # Suggestions
     if [ "$errors_1m" -gt 3 ]; then
         echo "   🚨 対応必要: 直近1分で${errors_1m}件のエラー - コンテナ再起動を検討"
     elif [ "$errors_5m" -gt 10 ]; then
@@ -81,7 +80,7 @@ for container in "${containers[@]}"; do
     echo ""
 done
 
-# 全体トレンド分析
+# Overall trend
 total_1m=0
 total_5m=0
 total_10m=0

@@ -1,82 +1,22 @@
-# Twitter Bulk Blocker 継続的改善ロードマップ
+# Improvement ideas
 
-## 🎯 現在の達成状況
+Unscheduled proposals; none of these exist in the code or the monitoring scripts today.
 
-### ✅ Phase 1: 基本安定性確保 (完了)
-- [x] 403エラー無限ループ問題の根本解決
-- [x] 全コンテナでの0エラー達成
-- [x] 監視スクリプトの誤検知修正
-- [x] システムヘルススコア100/100達成
+## Monitoring
 
-### ✅ Phase 2: 監視精度向上 (完了)
-- [x] エラーパターンの正確な検出
-- [x] リアルタイム状況把握
-- [x] 時系列分析機能
-- [x] 生産性指標の可視化
+- Early warning: track cookie expiry, remaining API rate limit and small drops in success rate, and refresh cookies or slow down before errors occur.
+- Resource monitoring: CPU and memory per container.
+- Detailed performance analysis to find bottlenecks.
 
-## 🚀 Phase 3: 予測的監視システム (提案)
+## Automation
 
-### 🔮 早期警告システム
-- **目的**: エラー発生前の予兆検出
-- **指標**: 
-  - Cookie有効期限の監視
-  - API制限残量の追跡
-  - 成功率の微細な変化検出
-- **アクション**: 予防的Cookie更新・処理速度調整
+- Automatic container restart when an error threshold is reached.
+- Automatic detection and refresh of expired cookies.
+- Automatic stop of containers that have finished processing.
+- Dynamic adjustment of the batch size.
 
-### 📊 パフォーマンス最適化
-- **目的**: 処理効率の継続的向上
-- **機能**:
-  - コンテナ別負荷バランシング
-  - 最適バッチサイズの動的調整
-  - リソース使用量最適化
+## Longer term
 
-### 🎛️ 自動復旧システム
-- **目的**: 問題発生時の自動対応
-- **機能**:
-  - エラー閾値到達時の自動コンテナ再起動
-  - Cookie期限切れの自動検出・更新
-  - 処理完了コンテナの自動停止
-
-## 🔧 Phase 4: 運用自動化 (長期目標)
-
-### 🤖 完全自動運用
-- **リリース管理**: 新バージョンの自動テスト・デプロイ
-- **リソース管理**: 動的スケーリング・コスト最適化
-- **問題対応**: 自動エスカレーション・通知システム
-
-### 📈 ビジネス価値向上
-- **分析機能**: 処理傾向・効果測定の自動レポート
-- **最適化提案**: AIベースの改善提案システム
-- **コンプライアンス**: 自動ログ保管・監査対応
-
-## ⚡ 短期実装優先度
-
-### High Priority (1-2週間)
-1. **PR #82/#83のマージ**: 追加保険機能の適用
-2. **予測的Cookie管理**: 期限切れ前の自動更新
-3. **詳細パフォーマンス分析**: ボトルネック特定
-
-### Medium Priority (1ヶ月)
-1. **自動復旧機能**: エラー時の自動対応
-2. **負荷バランシング**: コンテナ間処理分散
-3. **リソース監視**: CPU/メモリ使用量追跡
-
-### Low Priority (3ヶ月)
-1. **AI予測機能**: 機械学習ベース異常検知
-2. **完全自動運用**: 人的介入不要システム
-3. **次世代アーキテクチャ**: マイクロサービス化
-
-## 📊 成功指標
-
-### 技術指標
-- **稼働率**: 99.9%以上維持
-- **エラー率**: 0.01%以下維持  
-- **応答時間**: 平均1秒以下
-- **自動復旧率**: 95%以上
-
-### ビジネス指標
-- **処理効率**: 50%向上
-- **運用コスト**: 30%削減
-- **問題対応時間**: 80%短縮
-- **ユーザー満足度**: 95%以上
+- Automated testing and deployment of new releases.
+- Automatic escalation and notification.
+- Automatic log retention and audit reports.

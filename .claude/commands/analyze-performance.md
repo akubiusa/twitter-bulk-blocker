@@ -1,40 +1,35 @@
-システムパフォーマンスの詳細分析とボトルネック特定を実行します。
+Analyze processing performance and identify bottlenecks.
 
-分析対象: $ARGUMENTS （database, api, cache, all）
+Target: $ARGUMENTS (database, api, cache, all)
 
-### 📊 Phase 1: 現状パフォーマンス測定
-**データベース分析** (database/all の場合):
-1. SQLiteクエリ実行時間の測定
-2. インデックス使用状況の確認
-3. WALモード効率性の検証
-4. バッチ処理最適化の評価
+There is no built-in benchmark or metrics endpoint wired into the CLI.
+Measure from the real run output (`--stats`, `--debug`, container logs) and from the cache and database files.
 
-**API分析** (api/all の場合):
-1. Twitter API応答時間の測定
-2. レート制限使用率の分析
-3. GraphQL vs REST APIパフォーマンス比較
-4. 拡張ヘッダー機能の影響評価
+## Database (database/all)
 
-**キャッシュ分析** (cache/all の場合):
-1. 3層キャッシュ（Lookup/Profile/Relationship）ヒット率測定
-2. キャッシュTTL効率性の確認
-3. メモリ使用量とI/O負荷の分析
-4. 永続的失敗キャッシュの効果測定
+- SQLite file: `TWITTER_BLOCK_DB` (`/data/block_history.db` in Docker), tables `block_history` and `process_log`.
+- Time the queries behind `--stats` (`DatabaseManager.get_detailed_stats`) and the batch permanent-failure lookup (`get_permanent_failures_batch`) on the real file.
+- Check for per-user queries inside loops (N+1).
+  Batch loops in `twitter_blocker/manager.py` already fetch permanent failures once per batch.
+- Check query plans with `EXPLAIN QUERY PLAN` before suggesting indexes; the code creates no explicit indexes.
 
-### 🔍 Phase 2: ボトルネック特定
-1. 処理時間分布の分析（50%ile, 95%ile, 99%ile）
-2. リソース使用率の特定（CPU, メモリ, I/O）
-3. 並行処理効率の評価
-4. N+1問題の検出
+## API (api/all)
 
-### ⚡ Phase 3: 最適化提案
-1. 短期改善案（即座に実装可能）
-2. 中期改善案（設計変更が必要）
-3. 長期改善案（アーキテクチャ変更）
-4. 投資対効果の評価
+- User lookup uses GraphQL `UsersByRestIds` (batched, default `batch_size=50`) and `UserByScreenName`; blocking uses `1.1/blocks/create.json`.
+- Compare request rate with rate-limit waits (the wait is derived from `x-rate-limit-reset`, clamped to 60-900 s, 300 s fallback).
+- `--delay` (default 1.0 s) is the pause between requests.
+- Header enhancement (`--disable-header-enhancement`, `--enable-forwarded-for`): `get_effectiveness_report()` in `api.py` compares enhanced vs basic header success rates.
 
-実行手順：
-1. 現在のパフォーマンス指標を測定
-2. ベンチマークテストを実行
-3. 結果を既存のSLA（50件/秒以上、キャッシュヒット率80%以上）と比較
-4. 具体的な改善策をコードレベルで提案
+## Cache (cache/all)
+
+- Three file caches under `CACHE_DIR` (default `/data/cache`): `lookups/` (screen name to user ID), `profiles/`, `relationships/<login user>/`.
+- TTL is 30 days (`cache_ttl` in `api.py`).
+- `TwitterAPI.get_cache_stats()` counts total/valid/expired entries per cache, but nothing in the CLI calls it.
+  Hit rate is not recorded; count `CACHE HIT` lines in the logs to estimate it.
+
+## Procedure
+
+1. Collect throughput (blocks per minute) and error counts from the logs for the period in question.
+2. Find where time goes: rate-limit waits, `--delay`, API latency, or database access.
+3. Propose changes at the code level, ordered by effort (config change, code change, design change).
+4. Report numbers with the measurement method; do not compare against targets that are not defined in the repository.

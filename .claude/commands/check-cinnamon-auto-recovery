@@ -1,29 +1,29 @@
 #!/bin/bash
 
-# check-cinnamon-auto-recovery - 自動回復機能付き監視システム
-# 無限ループ検出時の自動対応機能
+# check-cinnamon-auto-recovery - monitoring with automatic recovery
+# restarts containers when an infinite loop is detected
 
 set -e
 
 echo "🔄 CINNAMON AUTO-RECOVERY SYSTEM"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 基本チェック実行
+# run the basic check
 .claude/commands/check-cinnamon > /tmp/cinnamon-status.log 2>&1
 
-# エラー数を抽出
+# extract the error count
 total_errors=$(grep "総403エラー:" /tmp/cinnamon-status.log | grep -o '[0-9]*件' | head -1 | grep -o '[0-9]*')
 status=$(grep "RECOMMENDED ACTIONS" -A 1 /tmp/cinnamon-status.log | tail -1 | grep -o -E "(CRITICAL|WARNING|GOOD)")
 
 echo "📊 現在の状況: ${total_errors:-0}件のエラー, ステータス: ${status:-UNKNOWN}"
 
-# 自動回復判定
+# decide whether to recover
 if [ "${status:-UNKNOWN}" = "CRITICAL" ] && [ "${total_errors:-0}" -gt 50 ]; then
     echo ""
     echo "🚨 CRITICAL状態検出: 自動回復プロセス開始"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
-    # 問題コンテナの特定
+    # find the problem containers
     problem_containers=$(grep -E "📊.*🚨 CRITICAL" /tmp/cinnamon-status.log | cut -d: -f1 | cut -d' ' -f2)
     
     if [ -n "$problem_containers" ]; then
@@ -34,7 +34,7 @@ if [ "${status:-UNKNOWN}" = "CRITICAL" ] && [ "${total_errors:-0}" -gt 50 ]; the
             echo ""
             echo "🔄 $container コンテナの自動回復実行中..."
             
-            # エラー詳細確認
+            # inspect errors
             recent_errors=$(ssh Cinnamon "docker logs $container_name --since 5m 2>/dev/null | grep -E '🚨.*403エラー.*回検出' | wc -l" || echo 0)
             echo "   直近5分のエラー: ${recent_errors}件"
             
@@ -43,11 +43,11 @@ if [ "${status:-UNKNOWN}" = "CRITICAL" ] && [ "${total_errors:-0}" -gt 50 ]; the
                 ssh Cinnamon "docker restart $container_name"
                 echo "   ✅ $container コンテナ再起動完了"
                 
-                # 回復待機
+                # wait for recovery
                 echo "   ⏳ 回復プロセス待機中..."
                 sleep 30
                 
-                # 回復確認
+                # verify recovery
                 recovery_check=$(ssh Cinnamon "docker logs $container_name --since 30s 2>/dev/null | grep -c '✓.*ブロック成功'" || echo 0)
                 if [ "$recovery_check" -gt 0 ]; then
                     echo "   🎉 $container: 回復成功確認 (${recovery_check}件の成功処理)"
@@ -74,7 +74,7 @@ elif [ "${status:-UNKNOWN}" = "GOOD" ]; then
     echo ""
     echo "✅ システム正常: 定期監視継続"
     
-    # 生産性確認
+    # check productivity
     if ssh Cinnamon true 2>/dev/null; then
         total_success=$(ssh Cinnamon 'total=0; for container in book000 authorizedkey; do success=$(docker logs bulk-block-users-${container}-1 --since 10m 2>/dev/null | grep -c "✓.*ブロック成功" || echo 0); total=$((total + success)); done; echo $total')
         echo "   📈 生産性: ${total_success:-0}件/10分の成功処理"
@@ -97,5 +97,5 @@ fi
 echo ""
 echo "🕒 自動回復システム実行時間: $(date '+%H:%M:%S')"
 
-# ログクリーンアップ
+# log cleanup
 rm -f /tmp/cinnamon-status.log

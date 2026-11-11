@@ -1,31 +1,10 @@
-指定された問題について詳細調査とデバッグを実行します。
+Investigate and debug the problem described below.
 
-問題の説明: $ARGUMENTS
+Problem: $ARGUMENTS
 
-以下の手順で体系的にデバッグを進めてください：
+1. Understand: symptoms, conditions, frequency, affected scope; collect the relevant logs (production logs via `.claude/cinnamon-logs.sh`); try to reproduce with `python3 -m twitter_blocker --test-user <name> --debug`.
+2. Find the root cause: read the relevant code, trace the data flow, check configuration and environment (cookies, users file, cache and database paths).
+3. Choose a fix: compare approaches, prefer the smallest change, assess side effects.
+4. Implement and verify: apply the fix, run `python3 -m py_compile twitter_blocker/*.py`, and confirm the behavior with a debug run (the repository has no committed test suite).
 
-### 🔍 Phase 1: 問題の理解と情報収集
-1. 問題の詳細分析（症状、発生条件、頻度）
-2. 関連するエラーログの収集・分析
-3. 影響範囲の特定
-4. 再現可能性の確認
-
-### 🔧 Phase 2: 根本原因の特定
-1. 関連コードの詳細レビュー
-2. データフローの追跡
-3. 依存関係の確認
-4. 設定・環境要因の検証
-
-### 💡 Phase 3: 解決策の策定
-1. 複数の修正アプローチの検討
-2. 最小限の変更で済む解決策の特定
-3. 副作用・リスクの評価
-4. テスト戦略の立案
-
-### 🚀 Phase 4: 実装と検証
-1. 修正コードの実装
-2. 単体テスト・統合テストの実行
-3. 品質チェック（lint/typecheck）の実行
-4. 修正効果の確認
-
-各フェーズで発見した内容を詳細に報告し、最終的に具体的な修正手順とコードを提示してください。
+Report the findings of each step and finish with the concrete fix.

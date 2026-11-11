@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cinnamonサーバー継続的監視スクリプト
+# Runs check-cinnamon in a loop with an adaptive interval.
 
 echo "=== CINNAMON SERVER CONTINUOUS MONITORING STARTED ==="
 echo "Start time: $(date '+%Y-%m-%d %H:%M:%S')"
@@ -9,30 +9,28 @@ echo
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK_CINNAMON_SCRIPT="$SCRIPT_DIR/check-cinnamon"
 
-# 無限ループ
+# Loop forever
 while true; do
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "🔄 Executing check-cinnamon at $(date '+%Y-%m-%d %H:%M:%S')"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
-    # check-cinnamonの実行と出力の保存
+    # Run check-cinnamon and capture its output
     OUTPUT=$("$CHECK_CINNAMON_SCRIPT" 2>&1)
     EXIT_CODE=$?
     
-    # 出力を表示
     echo "$OUTPUT"
     
-    # スクリプト実行エラーのチェック
+    # On script failure, retry soon
     if [ $EXIT_CODE -ne 0 ]; then
         echo "⚠️ WARNING: check-cinnamon script failed with exit code $EXIT_CODE"
         NEXT_INTERVAL="5 minutes"
     else
-        # 次回実行間隔の抽出（改良版の正規表現）
+        # Interval recommended by check-cinnamon
         NEXT_INTERVAL=$(echo "$OUTPUT" | grep -E "Next check recommended:.*\(適応的間隔: ([0-9]+ minutes)\)" | sed -E 's/.*適応的間隔: ([0-9]+ minutes).*/\1/' | tail -1)
         
-        # フォールバック処理
+        # Fallback: derive the interval from the health score
         if [ -z "$NEXT_INTERVAL" ] || ! [[ "$NEXT_INTERVAL" =~ ^[0-9]+\ minutes$ ]]; then
-            # ヘルススコアから間隔を決定
             HEALTH_SCORE=$(echo "$OUTPUT" | grep "Overall Health Score:" | grep -o '[0-9]*' | head -1)
             
             if [ -n "$HEALTH_SCORE" ]; then
@@ -45,21 +43,21 @@ while true; do
                 fi
                 echo "ℹ️ Using health score ($HEALTH_SCORE/100) to determine interval: $NEXT_INTERVAL"
             else
-                # デフォルト値
+                # Default
                 NEXT_INTERVAL="10 minutes"
                 echo "ℹ️ Using default interval: $NEXT_INTERVAL"
             fi
         fi
     fi
     
-    # 重要なアラートのチェック
+    # Critical alert markers
     if echo "$OUTPUT" | grep -q "🚨 URGENT\|🔴 HIGH RISK\|ATTENTION_REQUIRED"; then
         echo
         echo "🚨 ALERT: Critical issues detected! Next check in $NEXT_INTERVAL"
         echo
     fi
     
-    # 秒数に変換
+    # Minutes to seconds
     INTERVAL_SECONDS=$(echo "$NEXT_INTERVAL" | awk '{print $1 * 60}')
     
     echo
@@ -71,6 +69,6 @@ while true; do
     echo "💤 Sleeping for $NEXT_INTERVAL..."
     echo
     
-    # 次回実行まで待機（timeoutコマンドで実装）
+    # Wait until the next run
     timeout $INTERVAL_SECONDS sleep infinity || true
 done

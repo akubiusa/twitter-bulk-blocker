@@ -1,12 +1,8 @@
 #!/bin/bash
 
-# check-latest-release - GitHub最新リリース確認とバージョン比較
+# check-latest-release - show the latest GitHub release and compare it with the running version
 #
-# 機能:
-# - GitHub APIで最新リリース情報を取得
-# - 現在稼働中バージョンとの比較
-# - リリースノートの表示
-# - 更新要否の自動判定
+# Exit code: 1 if an update is needed, 0 otherwise.
 
 set -e
 
@@ -14,7 +10,7 @@ echo "=== GITHUB RELEASE VERSION CHECK ==="
 echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
 echo
 
-# 設定
+# Settings
 GITHUB_REPO="book000/twitter-bulk-blocker"
 GITHUB_API_URL="https://api.github.com/repos/$GITHUB_REPO/releases"
 TIMEOUT_SECONDS=30
@@ -67,7 +63,7 @@ done
 echo "🔍 GITHUB RELEASE INFORMATION"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# GitHub APIで最新リリース情報を取得
+# Fetch the latest release from the GitHub API
 echo "📡 GitHub APIから最新リリース情報を取得中..."
 echo "  Repository: $GITHUB_REPO"
 
@@ -80,7 +76,7 @@ if [ -z "$LATEST_RELEASE_JSON" ] || [[ "$LATEST_RELEASE_JSON" == *"rate limit"* 
     exit 1
 fi
 
-# リリース情報の解析
+# Parse the release info
 LATEST_TAG=$(echo "$LATEST_RELEASE_JSON" | grep '"tag_name"' | cut -d'"' -f4)
 LATEST_NAME=$(echo "$LATEST_RELEASE_JSON" | grep '"name"' | cut -d'"' -f4 | head -1)
 RELEASE_DATE=$(echo "$LATEST_RELEASE_JSON" | grep '"published_at"' | cut -d'"' -f4)
@@ -104,7 +100,7 @@ else
     echo "  ✅ Type: Stable release"
 fi
 
-# 稼働中バージョンの確認（オプション）
+# Running version check (optional)
 RUNNING_VERSION=""
 if [ "$CHECK_RUNNING_VERSION" = true ]; then
     echo
@@ -130,7 +126,7 @@ if [ "$CHECK_RUNNING_VERSION" = true ]; then
     fi
 fi
 
-# バージョン比較分析
+# Version comparison
 echo
 echo "📊 VERSION COMPARISON ANALYSIS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -139,7 +135,7 @@ UPDATE_NEEDED=false
 UPDATE_PRIORITY="NONE"
 UPDATE_REASON=""
 
-# クリーンアップされたバージョンで比較
+# Compare with the "v" prefix and dirty/dev suffixes stripped
 LATEST_VERSION_CLEAN=$(echo "$LATEST_TAG" | sed 's/^v//')
 RUNNING_VERSION_CLEAN=$(echo "$RUNNING_VERSION" | sed 's/^v//' | sed 's/+dirty$//' | sed 's/\.dev[0-9]*$//')
 
@@ -151,7 +147,7 @@ if [ -n "$RUNNING_VERSION" ] && [ "$RUNNING_VERSION" != "Legacy/Unknown" ]; then
     if [ "$RUNNING_VERSION_CLEAN" != "$LATEST_VERSION_CLEAN" ]; then
         UPDATE_NEEDED=true
         
-        # リリース日時による緊急度判定
+        # Urgency by release age
         RELEASE_TIMESTAMP=$(date -d "$RELEASE_DATE" +%s 2>/dev/null || echo "0")
         CURRENT_TIMESTAMP=$(date +%s)
         HOURS_SINCE_RELEASE=$(( (CURRENT_TIMESTAMP - RELEASE_TIMESTAMP) / 3600 ))
@@ -159,7 +155,7 @@ if [ -n "$RUNNING_VERSION" ] && [ "$RUNNING_VERSION" != "Legacy/Unknown" ]; then
         if [ "$HOURS_SINCE_RELEASE" -lt 24 ]; then
             UPDATE_PRIORITY="HIGH"
             UPDATE_REASON="新しいリリースが ${HOURS_SINCE_RELEASE}時間前に公開されました"
-        elif [ "$HOURS_SINCE_RELEASE" -lt 168 ]; then  # 1週間
+        elif [ "$HOURS_SINCE_RELEASE" -lt 168 ]; then  # 1 week
             UPDATE_PRIORITY="MEDIUM"
             UPDATE_REASON="新しいリリースが $(( HOURS_SINCE_RELEASE / 24 ))日前に公開されました"
         else
@@ -186,7 +182,7 @@ else
     echo "ℹ️ 稼働中バージョン不明のため比較をスキップ"
 fi
 
-# リリースノート表示（オプション）
+# Release notes (optional)
 if [ "$SHOW_RELEASE_NOTES" = true ]; then
     echo
     echo "📝 RELEASE NOTES"
@@ -201,26 +197,26 @@ if [ "$SHOW_RELEASE_NOTES" = true ]; then
     fi
 fi
 
-# 詳細情報表示（オプション）
+# Detailed info (optional)
 if [ "$DETAILED_OUTPUT" = true ]; then
     echo
     echo "🔍 DETAILED RELEASE INFORMATION"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
-    # アセット情報
+    # Assets
     ASSETS_COUNT=$(echo "$LATEST_RELEASE_JSON" | grep -o '"name"' | wc -l)
     echo "📦 Release Assets: $ASSETS_COUNT個"
     
-    # タグ情報
+    # Tag
     TARGET_COMMITISH=$(echo "$LATEST_RELEASE_JSON" | grep '"target_commitish"' | cut -d'"' -f4)
     echo "🏷️ Target Branch: $TARGET_COMMITISH"
     
-    # 作者情報
+    # Author
     AUTHOR_LOGIN=$(echo "$LATEST_RELEASE_JSON" | grep '"login"' | cut -d'"' -f4 | head -1)
     echo "👤 Author: $AUTHOR_LOGIN"
 fi
 
-# アクション提案
+# Recommended actions
 echo
 echo "🎯 RECOMMENDED ACTIONS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -248,7 +244,7 @@ if [ "$UPDATE_NEEDED" = true ]; then
     echo "  📋 理由: $UPDATE_REASON"
     echo "  📈 更新後の効果: 最新機能、セキュリティ修正、パフォーマンス改善"
     
-    # Docker imageの手動pull確認
+    # Manual image checks
     echo
     echo "🐳 手動確認オプション:"
     echo "  最新イメージの確認:"
@@ -266,9 +262,9 @@ echo "  📋 Releases: https://github.com/$GITHUB_REPO/releases"
 echo "  📊 監視コマンド: .claude/commands/check-cinnamon"
 echo "  🔄 継続監視: .claude/commands/monitor-releases"
 
-# 終了コード（自動化スクリプト用）
+# Exit code (for automation)
 if [ "$UPDATE_NEEDED" = true ]; then
-    exit 1  # 更新が必要
+    exit 1  # update needed
 else
-    exit 0  # 更新不要
+    exit 0  # no update needed
 fi

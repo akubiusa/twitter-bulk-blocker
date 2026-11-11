@@ -1,12 +1,8 @@
 #!/bin/bash
 
-# wait-for-deployment - 自動デプロイプロセス（pull & up）の完了を待機・監視
+# wait-for-deployment - wait for the automatic deployment (pull & up) to finish
 #
-# 機能:
-# - コンテナpull/upの進行状況監視
-# - タイムアウト処理
-# - 詳細な進捗表示
-# - 最終的なバージョン確認
+# Watches pull/up progress with a timeout, then verifies the running version.
 
 set -e
 
@@ -14,7 +10,7 @@ echo "=== DEPLOYMENT COMPLETION MONITORING ==="
 echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
 echo
 
-# デフォルト設定
+# Defaults
 TIMEOUT_MINUTES=30
 UPDATE_START_TIME=$(date +%s)
 CHECK_INTERVAL=10
@@ -74,15 +70,15 @@ echo "  開始時刻: $(date -d "@$UPDATE_START_TIME" '+%H:%M:%S')"
 echo "  期限: $(date -d "@$DEADLINE" '+%H:%M:%S')"
 echo ""
 
-# 監視フェーズ設定
-PHASE_1_WAIT=60        # Phase 1: 初期待機時間（秒）
-PHASE_2_PULL_MAX=600   # Phase 2: Pull完了最大待機時間（秒）
-PHASE_3_UP_MAX=300     # Phase 3: Up完了最大待機時間（秒）
+# Phase limits
+PHASE_1_WAIT=60        # Phase 1: initial wait (s)
+PHASE_2_PULL_MAX=600   # Phase 2: max wait for pull (s)
+PHASE_3_UP_MAX=300     # Phase 3: max wait for up (s)
 
 echo "🔄 PHASE 1: 初期待機（デプロイプロセス開始まで）"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Phase 1: 初期待機
+# Phase 1: initial wait
 echo "⏱️ デプロイプロセスの開始を待機中... (${PHASE_1_WAIT}秒)"
 sleep $PHASE_1_WAIT
 
@@ -98,7 +94,7 @@ while [ $PULL_COMPLETED = false ]; do
     ELAPSED=$((CURRENT_TIME - UPDATE_START_TIME))
     PHASE_2_ELAPSED=$((CURRENT_TIME - PHASE_2_START))
     
-    # タイムアウトチェック
+    # Overall timeout
     if [ $CURRENT_TIME -gt $DEADLINE ]; then
         echo "❌ タイムアウトしました (${TIMEOUT_MINUTES}分経過)"
         echo "💡 手動で確認してください:"
@@ -106,21 +102,21 @@ while [ $PULL_COMPLETED = false ]; do
         exit 1
     fi
     
-    # Phase 2のタイムアウトチェック
+    # Phase 2 timeout
     if [ $PHASE_2_ELAPSED -gt $PHASE_2_PULL_MAX ]; then
         echo "⚠️ Pull フェーズがタイムアウトしました (${PHASE_2_PULL_MAX}秒経過)"
         echo "💡 Pull処理が長時間実行中か、エラーが発生している可能性があります"
         break
     fi
     
-    # Docker Compose状況確認
+    # Docker Compose state
     echo "🔍 $(date '+%H:%M:%S') - Pull進行状況確認 (経過時間: ${ELAPSED}秒)"
     
-    # 現在のコンテナ状況
+    # Current containers
     CONTAINER_COUNT=$(ssh Cinnamon "docker ps --filter 'name=bulk-block-users' --format '{{.Names}}' | wc -l" 2>/dev/null || echo "0")
     echo "  現在稼働中: ${CONTAINER_COUNT}コンテナ"
     
-    # Docker Composeプロセス確認
+    # Docker Compose process
     COMPOSE_PROCESS=$(ssh Cinnamon "ps aux | grep -v grep | grep 'docker.*compose' | head -1" 2>/dev/null || echo "")
     if [ -n "$COMPOSE_PROCESS" ]; then
         echo "  🔄 Docker Composeプロセス実行中"
@@ -131,7 +127,7 @@ while [ $PULL_COMPLETED = false ]; do
         echo "  ⏸️ Docker Composeプロセス未検出"
     fi
     
-    # 新しいコンテナ起動確認
+    # Detect newly started containers
     NEW_CONTAINERS=$(ssh Cinnamon "docker ps --filter 'name=bulk-block-users' --format '{{.Names}} {{.Status}}' | grep -E '(second|minute)' | wc -l" 2>/dev/null || echo "0")
     if [ "$NEW_CONTAINERS" -gt 0 ]; then
         echo "  ✅ 新しいコンテナ起動検出: ${NEW_CONTAINERS}個"
@@ -151,20 +147,20 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 PHASE_3_START=$(date +%s)
 ALL_HEALTHY=false
-EXPECTED_CONTAINERS=6  # 通常稼働するコンテナ数
+EXPECTED_CONTAINERS=6  # normal number of containers
 
 while [ $ALL_HEALTHY = false ]; do
     CURRENT_TIME=$(date +%s)
     ELAPSED=$((CURRENT_TIME - UPDATE_START_TIME))
     PHASE_3_ELAPSED=$((CURRENT_TIME - PHASE_3_START))
     
-    # タイムアウトチェック
+    # Overall timeout
     if [ $CURRENT_TIME -gt $DEADLINE ]; then
         echo "❌ タイムアウトしました (${TIMEOUT_MINUTES}分経過)"
         exit 1
     fi
     
-    # Phase 3のタイムアウトチェック
+    # Phase 3 timeout
     if [ $PHASE_3_ELAPSED -gt $PHASE_3_UP_MAX ]; then
         echo "⚠️ Up フェーズがタイムアウトしました (${PHASE_3_UP_MAX}秒経過)"
         echo "💡 コンテナ起動に時間がかかっている可能性があります"
@@ -173,22 +169,22 @@ while [ $ALL_HEALTHY = false ]; do
     
     echo "🔍 $(date '+%H:%M:%S') - コンテナ健康状態確認 (経過時間: ${ELAPSED}秒)"
     
-    # 稼働中コンテナ数
+    # Running containers
     RUNNING_COUNT=$(ssh Cinnamon "docker ps --filter 'name=bulk-block-users' --format '{{.Names}}' | wc -l" 2>/dev/null || echo "0")
     
-    # ヘルシーなコンテナ数
+    # Healthy containers
     HEALTHY_COUNT=$(ssh Cinnamon "docker ps --filter 'name=bulk-block-users' --filter 'health=healthy' --format '{{.Names}}' | wc -l" 2>/dev/null || echo "0")
     
     echo "  稼働中: ${RUNNING_COUNT}/${EXPECTED_CONTAINERS}コンテナ"
     echo "  ヘルシー: ${HEALTHY_COUNT}/${RUNNING_COUNT}コンテナ"
     
-    # 詳細ステータス
+    # Detailed status
     if [ "$VERBOSE" = true ] && [ "$RUNNING_COUNT" -gt 0 ]; then
         echo "  詳細ステータス:"
         ssh Cinnamon "docker ps --filter 'name=bulk-block-users' --format '    {{.Names}}: {{.Status}}'" 2>/dev/null || echo "    取得失敗"
     fi
     
-    # 全コンテナがヘルシーか確認
+    # Check that all containers are healthy
     if [ "$RUNNING_COUNT" -ge "$EXPECTED_CONTAINERS" ] && [ "$HEALTHY_COUNT" -eq "$RUNNING_COUNT" ]; then
         echo "  ✅ 全コンテナが正常に稼働中"
         ALL_HEALTHY=true
@@ -202,13 +198,13 @@ echo
 echo "🔢 FINAL VERIFICATION: バージョン確認"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 新しく起動したコンテナでバージョン確認
+# Check the version in a newly started container
 LATEST_CONTAINER=$(ssh Cinnamon "docker ps --filter 'name=bulk-block-users' --format '{{.Names}}' | head -1")
 if [ -n "$LATEST_CONTAINER" ]; then
     echo "📦 更新後バージョン確認:"
     echo "  コンテナ: $LATEST_CONTAINER"
     
-    # バージョン取得（最大3回試行）
+    # Get the version (retry loop)
     NEW_VERSION=""
     for attempt in 1 2 3; do
         NEW_VERSION=$(ssh Cinnamon "docker exec $LATEST_CONTAINER python3 -m twitter_blocker --version 2>/dev/null" | sed 's/^python3 -m twitter_blocker //' || echo "")

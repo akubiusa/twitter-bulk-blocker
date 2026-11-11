@@ -1,12 +1,11 @@
 #!/bin/bash
 
-# check-cinnamon-containers - コンテナ状態分析専用モジュール
+# check-cinnamon-containers - container status analysis
 
 set -e
 
 BRIEF=false
 
-# オプション解析
 while [[ $# -gt 0 ]]; do
     case $1 in
         --brief|-b)
@@ -24,14 +23,13 @@ if [ "$BRIEF" = false ]; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 fi
 
-# コンテナ状態分析
 if [ "$BRIEF" = true ]; then
     echo "🔍 コンテナ状態:"
 else
     echo "🔍 Container Status (稼働中/停止中の詳細分析):"
 fi
 
-# 稼働中のコンテナ
+# running containers
 RUNNING_CONTAINERS=$(ssh Cinnamon "docker ps --filter 'name=bulk-block-users' --format '{{.Names}} {{.Status}} {{.State}}'")
 STOPPED_CONTAINERS=$(ssh Cinnamon "docker ps -a --filter 'name=bulk-block-users' --filter 'status=exited' --format '{{.Names}} {{.Status}}'")
 
@@ -57,7 +55,7 @@ else
     echo "❌ 稼働中のコンテナが見つかりません"
 fi
 
-# 停止中のコンテナ
+# stopped containers
 if [ -n "$STOPPED_CONTAINERS" ]; then
     if [ "$BRIEF" = true ]; then
         echo "🔴 停止中コンテナ:"
@@ -77,13 +75,13 @@ else
     fi
 fi
 
-# 稼働時間マイルストーン分析（詳細モードまたは3時間以上稼働時）
+# uptime milestones (detailed mode, or uptime of 3 hours or more)
 if [ -n "$RUNNING_CONTAINERS" ]; then
-    # 最初のコンテナの稼働時間を取得
+    # uptime of the first container
     FIRST_CONTAINER=$(echo "$RUNNING_CONTAINERS" | head -1 | awk '{print $1}')
     UPTIME_STATUS=$(echo "$RUNNING_CONTAINERS" | head -1 | awk '{print $2}')
     
-    # 稼働時間からマイルストーン判定
+    # milestone from uptime
     if [[ "$UPTIME_STATUS" =~ "hour" ]]; then
         HOURS=$(echo "$UPTIME_STATUS" | grep -o '[0-9]\+' | head -1)
         
@@ -123,7 +121,7 @@ if [ -n "$RUNNING_CONTAINERS" ]; then
     fi
 fi
 
-# ヘルスチェック状況（詳細モードのみ）
+# health checks (detailed mode only)
 if [ "$BRIEF" = false ] && [ -n "$RUNNING_CONTAINERS" ]; then
     echo ""
     echo "🏥 Health Check Status:"

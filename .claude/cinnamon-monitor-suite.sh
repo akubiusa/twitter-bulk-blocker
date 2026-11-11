@@ -1,13 +1,12 @@
 #!/bin/bash
-# Cinnamonサーバー 監視ツール統合インターフェース - Claude Code最適化版
-# 引数ベースの非対話型システム
+# Non-interactive entry point that dispatches to the Cinnamon monitoring scripts.
 
 set -e
 
 SCRIPT_DIR="$(dirname "$0")"
 ANALYSIS_MODE="${1:-basic}"  # basic, advanced, trend, realtime, quick, emergency
-TIME_RANGE="${2:-6}"         # 時間範囲（トレンド分析用）
-MONITOR_INTERVAL="${3:-60}"  # 監視間隔（リアルタイム用）
+TIME_RANGE="${2:-6}"         # hours (trend mode)
+MONITOR_INTERVAL="${3:-60}"  # seconds (realtime mode)
 
 show_header() {
     echo "=== CINNAMON MONITORING SUITE ==="
@@ -36,12 +35,12 @@ show_usage() {
     echo "  $0 ai"
 }
 
-# クイック診断機能
+# Quick diagnosis
 quick_diagnosis() {
     echo -e "${YELLOW}🎯 クイック診断開始${NC}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
-    # 接続テスト
+    # Connectivity
     echo "1. 🔌 接続テスト中..."
     if ssh Cinnamon "echo 'Connection OK'" > /dev/null 2>&1; then
         echo -e "   ${GREEN}✅ SSH接続正常${NC}"
@@ -50,7 +49,7 @@ quick_diagnosis() {
         return 1
     fi
     
-    # コンテナ状態
+    # Containers
     echo "2. 📦 コンテナ状態確認..."
     containers=$(ssh Cinnamon "cd /mnt/hdd/cinnamon/twitter-auto-blocking/bulk-block-users && docker compose ps --format '{{.Service}}\t{{.State}}'" 2>/dev/null)
     running_count=$(echo "$containers" | grep -c "running" 2>/dev/null || echo "0")
@@ -64,7 +63,7 @@ quick_diagnosis() {
         echo -e "   ${YELLOW}⚠️  一部コンテナに問題${NC}"
     fi
     
-    # 直近のエラー確認
+    # Recent errors
     echo "3. 🚨 直近エラー確認..."
     recent_errors=$(ssh Cinnamon "cd /mnt/hdd/cinnamon/twitter-auto-blocking/bulk-block-users && docker compose logs --since '10m' | grep -c 'エラー\\|ERROR\\|failed\\|401\\|403'" 2>/dev/null || echo "0")
     
@@ -76,7 +75,7 @@ quick_diagnosis() {
         echo -e "   ${RED}🚨 エラー多発 ${recent_errors}件${NC}"
     fi
     
-    # 処理状況確認
+    # Progress
     echo "4. ⚡ 処理状況確認..."
     recent_blocks=$(ssh Cinnamon "cd /mnt/hdd/cinnamon/twitter-auto-blocking/bulk-block-users && docker compose logs --since '5m' | grep -c 'ブロック成功'" 2>/dev/null || echo "0")
     
@@ -88,7 +87,7 @@ quick_diagnosis() {
         echo -e "   ${RED}🚨 処理停滞中${NC}"
     fi
     
-    # 総合判定
+    # Verdict
     echo
     echo "📋 クイック診断結果:"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -107,12 +106,11 @@ quick_diagnosis() {
     echo
 }
 
-# パフォーマンス解析
+# Hourly throughput
 performance_analysis() {
     echo -e "${PURPLE}📈 パフォーマンス解析開始${NC}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     
-    # 時間別処理量分析
     echo "⏰ 時間別処理量分析 (過去6時間):"
     for hour in {0..5}; do
         start_time=$(date -d "$hour hours ago" '+%Y-%m-%d %H:00:00')
@@ -121,7 +119,7 @@ performance_analysis() {
         
         blocks=$(ssh Cinnamon "cd /mnt/hdd/cinnamon/twitter-auto-blocking/bulk-block-users && docker compose logs --since '6h' --until '0h' | grep 'ブロック成功' | wc -l" 2>/dev/null || echo "0")
         
-        # 簡易バーチャート
+        # Bar chart, one block per 10 blocks
         bar_length=$((blocks / 10))
         bar=""
         for i in $(seq 1 $bar_length); do bar="${bar}█"; done
@@ -134,7 +132,7 @@ performance_analysis() {
     echo
 }
 
-# 緊急診断モード
+# Emergency diagnosis
 emergency_diagnosis() {
     echo -e "${RED}🚨 緊急診断モード開始${NC}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -142,7 +140,7 @@ emergency_diagnosis() {
     echo "🔍 緊急事態チェックリスト:"
     echo
     
-    # 1. 全コンテナ停止チェック
+    # 1. All containers stopped
     echo "1. 📦 コンテナ完全停止チェック..."
     running_containers=$(ssh Cinnamon "cd /mnt/hdd/cinnamon/twitter-auto-blocking/bulk-block-users && docker compose ps --filter 'status=running' | wc -l" 2>/dev/null || echo "0")
     if [ $running_containers -eq 0 ]; then
@@ -152,7 +150,7 @@ emergency_diagnosis() {
         echo -e "   ${GREEN}✅ OK: コンテナ稼働中${NC}"
     fi
     
-    # 2. 認証エラー急増チェック
+    # 2. Authentication error spike
     echo "2. 🔐 認証エラー急増チェック..."
     auth_errors=$(ssh Cinnamon "cd /mnt/hdd/cinnamon/twitter-auto-blocking/bulk-block-users && docker compose logs --since '30m' | grep -c '認証エラー\\|401\\|Could not authenticate'" 2>/dev/null || echo "0")
     if [ $auth_errors -gt 20 ]; then
@@ -165,7 +163,7 @@ emergency_diagnosis() {
         echo -e "   ${GREEN}✅ OK: 認証状況正常${NC}"
     fi
     
-    # 3. レートリミット枯渇チェック
+    # 3. Rate limit exhaustion
     echo "3. 📡 レートリミット枯渇チェック..."
     rate_errors=$(ssh Cinnamon "cd /mnt/hdd/cinnamon/twitter-auto-blocking/bulk-block-users && docker compose logs --since '30m' | grep -c '429\\|Rate limit exceeded'" 2>/dev/null || echo "0")
     if [ $rate_errors -gt 15 ]; then
@@ -175,7 +173,7 @@ emergency_diagnosis() {
         echo -e "   ${GREEN}✅ OK: レートリミット正常${NC}"
     fi
     
-    # 4. 処理完全停止チェック
+    # 4. Processing fully stalled
     echo "4. ⚡ 処理完全停止チェック..."
     recent_activity=$(ssh Cinnamon "cd /mnt/hdd/cinnamon/twitter-auto-blocking/bulk-block-users && docker compose logs --since '15m' | grep -c 'ブロック成功\\|進捗'" 2>/dev/null || echo "0")
     if [ $recent_activity -eq 0 ]; then
@@ -207,7 +205,7 @@ emergency_diagnosis() {
     echo
 }
 
-# ツール設定
+# Tool settings
 tool_settings() {
     echo -e "${BLUE}🔧 ツール設定${NC}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -227,7 +225,7 @@ tool_settings() {
     echo
 }
 
-# ヘルプ・ドキュメント
+# Help text
 show_help() {
     echo -e "${CYAN}📚 ヘルプ・ドキュメント${NC}"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -267,7 +265,7 @@ show_help() {
     echo
 }
 
-# 非対話型メイン処理
+# Main
 main() {
     show_header
     
@@ -286,7 +284,7 @@ main() {
             ;;
         "realtime")
             echo "EXECUTING: Real-time monitoring (${MONITOR_INTERVAL}s)"
-            # リアルタイム監視は1回のサンプリングのみ実行
+            # Single sample only
             "$SCRIPT_DIR/cinnamon-realtime-monitor.sh" "$MONITOR_INTERVAL" "single"
             ;;
         "quick")
@@ -315,5 +313,4 @@ main() {
     echo "ANALYSIS_COMPLETED: $(date '+%Y-%m-%d %H:%M:%S')"
 }
 
-# Claude Code最適化: 常に非対話型で実行
 main "$@"

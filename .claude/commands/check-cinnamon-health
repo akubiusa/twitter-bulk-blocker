@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# check-cinnamon-health - 長期ヘルス分析専用モジュール
+# check-cinnamon-health - long-term health analysis
 
 set -e
 
 echo "🔐 AUTHENTICATION STATUS & LONG-TERM HEALTH ANALYSIS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 認証エラー履歴分析
+# auth error history
 echo "📊 Authentication Error Timeline:"
 
 AUTH_ERRORS_5M=0
@@ -18,7 +18,7 @@ AUTH_ERRORS_24H=0
 CONTAINERS="bulk-block-users-book000-1 bulk-block-users-ihc_amot-1 bulk-block-users-book000_vrc-1 bulk-block-users-authorizedkey-1 bulk-block-users-tomachi_priv-1 bulk-block-users-tomarabbit-1"
 
 for container in $CONTAINERS; do
-    # 各時間範囲での認証エラーをカウント
+    # count auth errors per time range
     AUTH_ERRORS_5M=$((AUTH_ERRORS_5M + $(ssh Cinnamon "docker logs $container --since='5m' 2>&1 | grep -iE '(authorization|authentication|401|unauthorized)' | wc -l" || echo "0")))
     AUTH_ERRORS_1H=$((AUTH_ERRORS_1H + $(ssh Cinnamon "docker logs $container --since='1h' 2>&1 | grep -iE '(authorization|authentication|401|unauthorized)' | wc -l" || echo "0")))
     AUTH_ERRORS_6H=$((AUTH_ERRORS_6H + $(ssh Cinnamon "docker logs $container --since='6h' 2>&1 | grep -iE '(authorization|authentication|401|unauthorized)' | wc -l" || echo "0")))
@@ -38,7 +38,7 @@ fi
 
 echo ""
 
-# Cookie更新状況分析
+# cookie refresh status
 echo "🍪 Cookie Update Health Analysis:"
 
 COOKIE_UPDATES=0
@@ -47,7 +47,7 @@ COOKIE_FAILURES=0
 for container in $CONTAINERS; do
     service=$(echo $container | cut -d- -f4)
     
-    # Cookie更新成功・失敗をカウント
+    # count cookie refresh successes and failures
     updates=$(ssh Cinnamon "docker logs $container --since='1h' 2>&1 | grep -c 'Cookie更新完了' || echo '0'")
     failures=$(ssh Cinnamon "docker logs $container --since='1h' 2>&1 | grep -c 'Cookie.*失敗\|Cookie.*エラー' || echo '0'")
     
@@ -71,7 +71,7 @@ fi
 
 echo ""
 
-# 長期エラー傾向分析
+# long-term error trend
 echo "📈 Long-term Error Trend Analysis:"
 
 ERRORS_1H=0
@@ -89,7 +89,7 @@ echo "    - 1時間: $ERRORS_1H件"
 echo "    - 6時間: $ERRORS_6H件"
 echo "    - 24時間: $ERRORS_24H件"
 
-# エラー率計算
+# error rate
 if [ $ERRORS_6H -gt 0 ]; then
     HOURLY_RATE=$((ERRORS_1H * 6))
     if [ $HOURLY_RATE -gt $ERRORS_6H ]; then
@@ -101,15 +101,15 @@ if [ $ERRORS_6H -gt 0 ]; then
     fi
 fi
 
-# ヘルススコア算出
+# health score
 HEALTH_SCORE=100
 
-# 認証エラーによる減点
+# deduction for auth errors
 if [ $AUTH_ERRORS_24H -gt 0 ]; then
     HEALTH_SCORE=$((HEALTH_SCORE - AUTH_ERRORS_24H * 5))
 fi
 
-# 403エラーによる減点
+# deduction for 403 errors
 if [ $ERRORS_24H -gt 100 ]; then
     HEALTH_SCORE=$((HEALTH_SCORE - 30))
 elif [ $ERRORS_24H -gt 50 ]; then
@@ -118,14 +118,14 @@ elif [ $ERRORS_24H -gt 20 ]; then
     HEALTH_SCORE=$((HEALTH_SCORE - 10))
 fi
 
-# Cookie失敗による減点
+# deduction for cookie failures
 if [ $COOKIE_FAILURES -gt $COOKIE_UPDATES ]; then
     HEALTH_SCORE=$((HEALTH_SCORE - 25))
 elif [ $COOKIE_FAILURES -gt 0 ]; then
     HEALTH_SCORE=$((HEALTH_SCORE - 10))
 fi
 
-# 最小値0に調整
+# clamp to 0
 if [ $HEALTH_SCORE -lt 0 ]; then
     HEALTH_SCORE=0
 fi

@@ -1,14 +1,13 @@
 #!/bin/bash
 
-# check-cinnamon-health-score - システムヘルススコア計算機能
-# 複数時間範囲でのエラー分析に基づく総合健康度算出
+# check-cinnamon-health-score - overall health score from multi-window error analysis
 
 set -e
 
 echo "🏥 SYSTEM HEALTH SCORE ANALYSIS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# SSH接続確認
+# Verify SSH connectivity
 if ! ssh -o ConnectTimeout=5 -o BatchMode=yes Cinnamon true 2>/dev/null; then
     echo "❌ Cinnamonサーバーへの接続に失敗しました"
     exit 1
@@ -24,17 +23,16 @@ echo ""
 for container in "${containers[@]}"; do
     container_name="bulk-block-users-${container}-1"
     
-    # 複数時間範囲でのエラー数取得
+    # Error counts over several time windows
     errors_1m=$(ssh Cinnamon "docker logs $container_name --since 1m 2>/dev/null | grep -E '🚨.*403エラー.*回検出' | wc -l" 2>/dev/null || echo 0)
     errors_5m=$(ssh Cinnamon "docker logs $container_name --since 5m 2>/dev/null | grep -E '🚨.*403エラー.*回検出' | wc -l" 2>/dev/null || echo 0)
     errors_10m=$(ssh Cinnamon "docker logs $container_name --since 10m 2>/dev/null | grep -E '🚨.*403エラー.*回検出' | wc -l" 2>/dev/null || echo 0)
     errors_30m=$(ssh Cinnamon "docker logs $container_name --since 30m 2>/dev/null | grep -E '🚨.*403エラー.*回検出' | wc -l" 2>/dev/null || echo 0)
     
-    # 成功・リセット処理数
+    # Success and counter-reset counts
     success_10m=$(ssh Cinnamon "docker logs $container_name --since 10m 2>/dev/null | grep -c '✓.*ブロック成功'" 2>/dev/null || echo 0)
     reset_10m=$(ssh Cinnamon "docker logs $container_name --since 10m 2>/dev/null | grep -c '📉.*エラーカウンターリセット'" 2>/dev/null || echo 0)
     
-    # 数値検証・改行削除
     [ -z "$errors_1m" ] && errors_1m=0
     [ -z "$errors_5m" ] && errors_5m=0
     [ -z "$errors_10m" ] && errors_10m=0
@@ -42,7 +40,7 @@ for container in "${containers[@]}"; do
     [ -z "$success_10m" ] && success_10m=0
     [ -z "$reset_10m" ] && reset_10m=0
     
-    # 改行・空白文字の除去
+    # Strip newlines and whitespace
     errors_1m=$(echo "$errors_1m" | tr -d '\n\r ')
     errors_5m=$(echo "$errors_5m" | tr -d '\n\r ')
     errors_10m=$(echo "$errors_10m" | tr -d '\n\r ')
@@ -50,7 +48,7 @@ for container in "${containers[@]}"; do
     success_10m=$(echo "$success_10m" | tr -d '\n\r ')
     reset_10m=$(echo "$reset_10m" | tr -d '\n\r ')
     
-    # 数値でない場合は0に設定
+    # Default non-numeric values to 0
     [[ ! "$errors_1m" =~ ^[0-9]+$ ]] && errors_1m=0
     [[ ! "$errors_5m" =~ ^[0-9]+$ ]] && errors_5m=0
     [[ ! "$errors_10m" =~ ^[0-9]+$ ]] && errors_10m=0
@@ -58,30 +56,30 @@ for container in "${containers[@]}"; do
     [[ ! "$success_10m" =~ ^[0-9]+$ ]] && success_10m=0
     [[ ! "$reset_10m" =~ ^[0-9]+$ ]] && reset_10m=0
     
-    # ヘルススコア計算（100点満点）
+    # Health score (max 100)
     health_score=100
     
-    # エラー数による減点
+    # Deduct for errors
     if [ "$errors_1m" -gt 0 ]; then
-        health_score=$((health_score - errors_1m * 10))  # 1分間エラーは重大
+        health_score=$((health_score - errors_1m * 10))  # 1-minute errors are critical
     fi
     if [ "$errors_5m" -gt 0 ]; then
-        health_score=$((health_score - errors_5m * 2))   # 5分間エラーは中程度
+        health_score=$((health_score - errors_5m * 2))   # 5-minute errors are moderate
     fi
     if [ "$errors_10m" -gt 0 ]; then
-        health_score=$((health_score - errors_10m * 1))  # 10分間エラーは軽微
+        health_score=$((health_score - errors_10m * 1))  # 10-minute errors are minor
     fi
     
-    # 成功処理による加点
+    # Bonus for successful processing
     if [ "$success_10m" -gt 10 ]; then
-        health_score=$((health_score + 5))  # 高い成功率は良好
+        health_score=$((health_score + 5))  # high success rate is good
     fi
     
-    # 最小・最大値制限
+    # Clamp to range
     [ "$health_score" -lt 0 ] && health_score=0
     [ "$health_score" -gt 100 ] && health_score=100
     
-    # ヘルス状態判定
+    # Classify health state
     if [ "$health_score" -ge 90 ]; then
         status="🟢 EXCELLENT"
         recommendation="継続監視"
@@ -99,12 +97,11 @@ for container in "${containers[@]}"; do
         recommendation="緊急対応必要"
     fi
     
-    # 結果表示
     printf "📊 %-15s: %3d点 %s\n" "$container" "$health_score" "$status"
     printf "   エラー推移: 1分=%d, 5分=%d, 10分=%d, 30分=%d\n" "$errors_1m" "$errors_5m" "$errors_10m" "$errors_30m"
     printf "   成功処理: %d件 (10分間), 推奨: %s\n" "$success_10m" "$recommendation"
     
-    # 改善トレンド分析
+    # Improvement trend
     if [ "$errors_1m" -eq 0 ] && [ "$errors_5m" -eq 0 ] && [ "$errors_10m" -eq 0 ]; then
         echo "   📈 トレンド: 完全安定 - エラーなし"
     elif [ "$errors_1m" -eq 0 ] && [ "$errors_5m" -eq 0 ]; then
@@ -122,7 +119,7 @@ for container in "${containers[@]}"; do
     total_health_score=$((total_health_score + health_score))
 done
 
-# 全体ヘルススコア計算
+# Overall health score
 overall_health=$((total_health_score / container_count))
 
 echo "🌟 OVERALL SYSTEM HEALTH"

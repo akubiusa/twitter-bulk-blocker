@@ -1,51 +1,11 @@
-# 次世代機能開発ロードマップ
+# Future enhancement ideas
 
-## 🚀 Phase 5: 予測AI機能 (2025年7-9月)
+Unscheduled proposals; none of these exist in the code or the monitoring scripts today.
 
-### 🤖 機械学習ベース予測
-- **処理速度予測**: 過去のパフォーマンスから処理完了時期を予測
-- **エラー傾向分析**: パターン認識による障害予測
-- **最適化提案**: AIによる設定調整推奨
-
-### 📊 高度分析機能
-- **リアルタイム効率性評価**: 動的パフォーマンス測定
-- **リソース使用量最適化**: CPU/メモリの効率的配分
-- **負荷バランシング**: コンテナ間の動的負荷分散
-
-## 🔮 Phase 6: 完全自動運用 (2025年10-12月)
-
-### 🎯 ゼロタッチ運用
-- **自動スケーリング**: 需要に応じた動的リソース調整
-- **自己修復システム**: 障害の自動検知・修復
-- **予防的メンテナンス**: 問題発生前の自動対策
-
-### 📈 ビジネス価値最大化
-- **コスト最適化**: 処理効率とリソースコストの最適バランス
-- **SLA保証**: 99.9%稼働率の自動維持
-- **レポート自動化**: 処理結果の自動集計・分析
-
-## 💡 即座に実装可能な改良
-
-### 🔧 短期改良 (1-2週間)
-1. **処理完了時期予測**: 残り処理量から完了時刻を算出
-2. **Cookie更新最適化**: 更新タイミングの智能調整
-3. **エラー傾向分析**: 過去データからの異常検知
-
-### 📊 中期改良 (1ヶ月)
-1. **リアルタイムダッシュボード**: Web UIでの監視画面
-2. **アラート系統**: Slack/Email通知システム
-3. **自動レポート**: 日次・週次の自動分析レポート
-
-## 🎯 品質指標目標
-
-### 技術指標
-- **稼働率**: 99.95%以上
-- **エラー率**: 0.001%以下
-- **予測精度**: 95%以上
-- **自動復旧率**: 99%以上
-
-### 運用指標
-- **監視工数**: 90%削減
-- **障害対応時間**: 80%短縮
-- **処理効率**: 50%向上
-- **運用コスト**: 40%削減
+- Processing completion estimate from the remaining user count and recent throughput.
+- Anomaly detection and trend analysis on historical error data.
+- Cookie refresh timing based on observed expiry.
+- A web dashboard for monitoring.
+- Slack or email alerts.
+- Automatic daily and weekly analysis reports.
+- Dynamic load balancing across containers and resource tuning (CPU, memory).
