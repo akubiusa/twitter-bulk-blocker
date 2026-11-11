@@ -1,10 +1,7 @@
-"""
-Twitter一括ブロックツール
+"""Bulk blocker for Twitter/X accounts.
 
-主要クラス:
-- BulkBlockManager: 一括ブロック管理システム
-- TwitterAPI: Twitter API アクセス管理
-- DatabaseManager: SQLiteデータベース管理
+Public classes: BulkBlockManager (orchestration), TwitterAPI (API access),
+DatabaseManager (SQLite block history).
 """
 
 from .api import TwitterAPI

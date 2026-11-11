@@ -1,6 +1,4 @@
-"""
-設定管理モジュール
-"""
+"""Users-file schema validation and cookie-file loading with a short-lived cache."""
 
 import json
 import time
@@ -9,7 +7,7 @@ from typing import Any, Dict, List, Tuple
 
 
 class ConfigManager:
-    """設定ファイルとスキーマ管理クラス"""
+    """Loads and validates the users file."""
 
     SUPPORTED_FORMATS = ["user_id", "screen_name"]
 
@@ -19,7 +17,14 @@ class ConfigManager:
         self._users_data = None
 
     def load_users_data(self) -> Tuple[List[str], str]:
-        """ユーザーデータをロードし、形式と共に返す"""
+        """Load the users file (cached after the first call).
+
+        Returns:
+            Tuple of (users list, format), where format is "user_id" or "screen_name".
+
+        Raises:
+            ValueError: If the file does not match the expected schema.
+        """
         if self._users_data is not None and self._user_format is not None:
             return self._users_data, self._user_format
 
@@ -33,20 +38,23 @@ class ConfigManager:
         return self._users_data, self._user_format
 
     def get_user_format(self) -> str:
-        """ユーザーファイルの形式を取得"""
+        """Return the users-file format ("user_id" or "screen_name"), loading the file if needed."""
         if self._user_format is None:
             self.load_users_data()
         return self._user_format
 
     def _validate_schema(self, data: Any) -> None:
-        """提案1スキーマの検証"""
+        """Validate the users-file schema: {"format": "user_id"|"screen_name", "users": [non-empty list]}.
+
+        Raises:
+            ValueError: On any schema violation.
+        """
         if not isinstance(data, dict):
             raise ValueError(
                 f"不正なユーザーファイル形式: {type(data)}。"
                 f"期待値: {{'format': 'user_id|screen_name', 'users': [...]}}"
             )
 
-        # 必須フィールドの確認
         if "format" not in data:
             raise ValueError(
                 "不正なスキーマ: 'format' フィールドが必要です。"
@@ -59,7 +67,6 @@ class ConfigManager:
                 "期待値: {'format': 'user_id|screen_name', 'users': [...]}"
             )
 
-        # formatフィールドの検証
         format_value = data["format"]
         if format_value not in self.SUPPORTED_FORMATS:
             raise ValueError(
@@ -67,7 +74,6 @@ class ConfigManager:
                 f"有効値: {' または '.join(self.SUPPORTED_FORMATS)}"
             )
 
-        # usersフィールドの検証
         users = data["users"]
         if not isinstance(users, list):
             raise ValueError(
@@ -79,7 +85,11 @@ class ConfigManager:
 
 
 class CookieManager:
-    """クッキー管理クラス - 全サービス対応動的更新システム"""
+    """Reads Twitter-domain cookies from a JSON export and caches them briefly.
+
+    The cache is invalidated by age or by a change of the file mtime, so cookie
+    files refreshed externally are picked up while running.
+    """
 
     TWITTER_DOMAINS = [".x.com", ".twitter.com", "x.com", "twitter.com"]
 
@@ -88,41 +98,41 @@ class CookieManager:
         self._cookies_cache = None
         self._cache_timestamp = None
         self._file_mtime = None
-        self.cache_duration = cache_duration  # デフォルト60秒（全サービス高頻度更新）
-        
-        # 全サービス対応の統一設定
-        self._global_optimization = True  # 全サービス最適化モード
-        self._min_cache_duration = 30     # 最小キャッシュ期間（30秒）
+        self.cache_duration = cache_duration  # seconds
+
+        self._global_optimization = True
+        self._min_cache_duration = 30     # seconds; also caps the effective duration (see load_cookies)
 
     def load_cookies(self) -> Dict[str, str]:
-        """クッキーファイルを読み込み、動的更新対応のTwitterドメインクッキー抽出"""
+        """Return cookies for Twitter domains as a name -> value dict.
+
+        The cache is used while younger than min(cache_duration, _min_cache_duration)
+        seconds and the file mtime is unchanged.
+
+        Raises:
+            FileNotFoundError: If the cookies file does not exist.
+        """
         current_time = time.time()
         cookie_path = Path(self.cookies_file)
-        
-        # ファイル存在チェック
+
         if not cookie_path.exists():
             raise FileNotFoundError(f"Cookieファイルが見つかりません: {self.cookies_file}")
         
         current_mtime = cookie_path.stat().st_mtime
         
-        # 全サービス統一の高頻度更新判定
         effective_duration = min(self.cache_duration, self._min_cache_duration)
         
-        # キャッシュ有効性チェック（全サービス統一設定）
         cache_valid = (
             self._cookies_cache is not None and
             self._cache_timestamp is not None and
             self._file_mtime is not None and
-            # 1. 統一時間ベース有効期限チェック
             (current_time - self._cache_timestamp < effective_duration) and
-            # 2. ファイル更新チェック  
             (current_mtime == self._file_mtime)
         )
         
         if cache_valid:
             return self._cookies_cache
         
-        # キャッシュ無効時：ファイルから再読み込み
         print(f"🔄 Cookie再読み込み [全サービス最適化]: {self.cookies_file}")
         if self._cookies_cache is not None:
             print(f"   時間経過={current_time - (self._cache_timestamp or 0):.1f}秒 "
@@ -138,7 +148,6 @@ class CookieManager:
             if domain in self.TWITTER_DOMAINS:
                 cookies_dict[cookie["name"]] = cookie["value"]
 
-        # キャッシュ更新
         self._cookies_cache = cookies_dict
         self._cache_timestamp = current_time
         self._file_mtime = current_mtime
@@ -147,44 +156,51 @@ class CookieManager:
         return cookies_dict
     
     def clear_cache(self):
-        """クッキーキャッシュをクリアして次回読み込み時にファイルから再読み込みさせる"""
+        """Drop the cache so the next load_cookies() re-reads the file."""
         print(f"🧹 Cookieキャッシュクリア実行")
         self._cookies_cache = None
         self._cache_timestamp = None
         self._file_mtime = None
     
     def force_refresh_on_error_threshold(self, error_count: int, threshold: int = 20, reset_callback=None) -> bool:
-        """403エラーが閾値を超えた場合の強制Cookie更新（無限ループ防止強化版）"""
+        """Force a cookie reload and a long blocking pause once 403 errors reach the threshold.
+
+        Args:
+            error_count: Number of 403 errors observed so far.
+            threshold: Error count at which the refresh is triggered.
+            reset_callback: Optional callable that resets the caller's 403 counter.
+
+        Returns:
+            True if the threshold was reached (after sleeping 30 minutes), else False.
+        """
         if error_count >= threshold:
             print(f"🚨 403エラー{error_count}回検出: Cookie強制更新実行（閾値: {threshold}）")
             print(f"⏸️ 緊急停止: {threshold}回エラー到達により一時処理停止")
             self.clear_cache()
-            
-            # Cookie更新時に403エラーカウンターを強制リセット
+
             if reset_callback and callable(reset_callback):
                 try:
                     reset_callback()
                     print("🔄 403エラーカウンター強制リセット完了（Cookie更新時）")
                 except Exception as e:
                     print(f"⚠️ 403エラーカウンターリセット失敗: {e}")
-            
-            # 強制クールダウン期間（30分）
+
             import time
             print(f"🕒 緊急クールダウン開始: 30分間処理停止")
-            time.sleep(1800)  # 30分待機
+            time.sleep(1800)  # 30 minutes: cooldown that prevents an endless forced-refresh loop
             print(f"✅ 緊急クールダウン完了: 処理再開")
                     
             return True
         return False
     
     def set_cache_duration(self, duration: int):
-        """キャッシュ有効期限を動的変更（秒単位）"""
+        """Set the cache duration in seconds (clamped to at least 30). NOTE: load_cookies caps the effective duration at 30, so values above 30 have no effect."""
         old_duration = self.cache_duration
-        self.cache_duration = max(duration, self._min_cache_duration)  # 最小30秒を保証
+        self.cache_duration = max(duration, self._min_cache_duration)  # floor of 30s
         print(f"⏰ Cookieキャッシュ有効期限変更: {old_duration}秒 → {self.cache_duration}秒")
         
     def get_cache_info(self) -> Dict[str, Any]:
-        """現在のキャッシュ状態情報を取得"""
+        """Return a snapshot of the cache state (ages and durations in seconds)."""
         current_time = time.time()
         effective_duration = min(self.cache_duration, self._min_cache_duration)
         

@@ -1,7 +1,4 @@
-"""
-Active状態ユーザー数変化監視機能
-長期稼働時のユーザーステータス変化の追跡と403エラー予測
-"""
+"""User status history, trend and anomaly analysis, and 403 risk scoring, stored in SQLite."""
 
 import json
 import sqlite3
@@ -13,7 +10,7 @@ from .database import DatabaseManager
 
 
 class UserStatusMonitor:
-    """ユーザーステータス変化監視システム"""
+    """Per-session monitor of user status history, predictions and alerts."""
     
     def __init__(self, database_manager: DatabaseManager):
         self.db = database_manager
@@ -21,15 +18,14 @@ class UserStatusMonitor:
         self.init_monitoring_tables()
     
     def _generate_session_id(self) -> str:
-        """セッションIDを生成"""
+        """Return a session ID of the form status_<epoch>_<YYYYmmdd_HHMMSS>."""
         return f"status_{int(time.time())}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     def init_monitoring_tables(self):
-        """ユーザーステータス監視用テーブルの初期化"""
+        """Create the user_status_history, user_status_alerts and status_change_predictions tables if missing."""
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             
-            # ユーザーステータス履歴テーブル
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS user_status_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,7 +44,6 @@ class UserStatusMonitor:
                 )
             """)
             
-            # ユーザーステータス変化アラート
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS user_status_alerts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,7 +60,6 @@ class UserStatusMonitor:
                 )
             """)
             
-            # ステータス変化予測テーブル
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS status_change_predictions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,7 +78,13 @@ class UserStatusMonitor:
             print(f"👥 ユーザーステータス監視テーブル初期化完了: {self.db.db_file}")
     
     def record_service_status(self, service_data: Dict[str, Any]) -> None:
-        """サービスのユーザーステータスを記録"""
+        """Insert a user_status_history row for a service.
+
+        Args:
+            service_data: Must contain service_name, total_users, blocked_users, failed_users,
+                active_failed, suspended_failed, permanent_failures and completion_rate (0-1).
+                Optional: runtime_hours (defaults to 0).
+        """
         current_time = time.time()
         
         with sqlite3.connect(self.db.db_file) as conn:
@@ -111,11 +111,17 @@ class UserStatusMonitor:
             ))
     
     def analyze_status_changes(self, service_name: str) -> Dict[str, Any]:
-        """ユーザーステータス変化の分析"""
+        """Analyze the last 24 hours of history for one service.
+
+        Side effect: predictions are saved to status_change_predictions.
+
+        Returns:
+            {"status": "insufficient_data", ...} if fewer than 2 rows exist, otherwise a dict
+            with trends, predictions, anomalies and risk_assessment.
+        """
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             
-            # 過去24時間のデータを取得
             cursor.execute("""
                 SELECT timestamp, active_failed, suspended_failed, total_users, 
                        completion_rate, runtime_hours
@@ -129,7 +135,6 @@ class UserStatusMonitor:
             if len(history_data) < 2:
                 return {"status": "insufficient_data", "message": "分析に十分なデータがありません"}
             
-            # 変化パターンの分析
             analysis = {
                 "service_name": service_name,
                 "data_points": len(history_data),
@@ -140,17 +145,21 @@ class UserStatusMonitor:
                 "risk_assessment": {}
             }
             
-            # リスク評価
             analysis["risk_assessment"] = self._assess_403_error_risk(analysis)
             
             return analysis
     
     def _analyze_trends(self, history_data: List[Tuple]) -> Dict[str, Any]:
-        """ステータス変化トレンドの分析"""
+        """Derive per-series trends and an overall direction from history rows.
+
+        Args:
+            history_data: Rows of (timestamp, active_failed, suspended_failed, total_users,
+                completion_rate, runtime_hours) in any order.
+        """
         if len(history_data) < 3:
             return {"insufficient_data": True}
         
-        # データの時系列順に並び替え（古い順）
+        # Oldest first.
         sorted_data = sorted(history_data, key=lambda x: x[0])
         
         trends = {
@@ -160,7 +169,6 @@ class UserStatusMonitor:
             "overall_direction": "unknown"
         }
         
-        # 全体的な傾向の判定
         active_trend = trends["active_failed_trend"]["direction"]
         completion_trend = trends["completion_rate_trend"]["direction"]
         
@@ -176,15 +184,18 @@ class UserStatusMonitor:
         return trends
     
     def _calculate_trend(self, values: List[float]) -> Dict[str, Any]:
-        """数値列のトレンドを計算"""
+        """Compute direction, slope and change rate of a series.
+
+        Slope is a least-squares fit against the sample index (not elapsed time).
+        Returns direction, change_rate (percent, first to last value), confidence and slope;
+        with fewer than 2 values, direction is "unknown" and slope is omitted.
+        """
         if len(values) < 2:
             return {"direction": "unknown", "change_rate": 0, "confidence": 0}
         
-        # 線形回帰での傾向計算
         n = len(values)
         x_values = list(range(n))
         
-        # 傾きの計算
         x_mean = sum(x_values) / n
         y_mean = sum(values) / n
         
@@ -196,22 +207,19 @@ class UserStatusMonitor:
         else:
             slope = numerator / denominator
         
-        # 方向の判定
-        if abs(slope) < 0.01:  # 閾値以下は安定
+        if abs(slope) < 0.01:  # |slope| below 0.01 per sample counts as stable
             direction = "stable"
         elif slope > 0:
             direction = "increasing"
         else:
             direction = "decreasing"
         
-        # 変化率の計算
         if values[0] != 0:
             change_rate = ((values[-1] - values[0]) / values[0]) * 100
         else:
             change_rate = 0
         
-        # 信頼度の計算（データ点数と変化の一貫性に基づく）
-        confidence = min(100, (n - 1) * 20)  # 最大100%
+        confidence = min(100, (n - 1) * 20)
         
         return {
             "direction": direction,
@@ -221,15 +229,21 @@ class UserStatusMonitor:
         }
     
     def _predict_status_changes(self, history_data: List[Tuple], service_name: str) -> Dict[str, Any]:
-        """ステータス変化の予測"""
+        """Extrapolate active_failed for the "1_hour", "3_hours" and "6_hours" scenarios from the last 5 data points and save the result.
+
+        NOTE: the slope is per sample, not per hour; it is applied 1x/3x/6x as if samples were hourly.
+
+        Returns:
+            {"prediction_available": False} if fewer than 3 rows exist, otherwise a dict with
+            predicted_scenarios keyed "1_hour", "3_hours" and "6_hours".
+        """
         if len(history_data) < 3:
             return {"prediction_available": False}
         
         sorted_data = sorted(history_data, key=lambda x: x[0])
-        current_active = sorted_data[-1][1]  # 最新のactive失敗数
+        current_active = sorted_data[-1][1]  # latest active_failed count
         
-        # 過去のトレンドから予測
-        recent_data = sorted_data[-5:]  # 直近5データポイント
+        recent_data = sorted_data[-5:]
         active_values = [row[1] for row in recent_data]
         
         trend = self._calculate_trend(active_values)
@@ -241,9 +255,7 @@ class UserStatusMonitor:
             "predicted_scenarios": {}
         }
         
-        # シナリオ別予測
         if trend["direction"] == "increasing":
-            # 増加傾向の場合
             hourly_increase = abs(trend["slope"])
             predictions["predicted_scenarios"] = {
                 "1_hour": {
@@ -272,13 +284,12 @@ class UserStatusMonitor:
                 "6_hours": {"active_failed": max(0, current_active - abs(trend["slope"]) * 6), "risk_level": "low"}
             }
         
-        # 予測の保存
         self._save_predictions(service_name, predictions)
         
         return predictions
     
     def _save_predictions(self, service_name: str, predictions: Dict[str, Any]) -> None:
-        """予測結果をデータベースに保存"""
+        """Save each scenario of `predictions` to status_change_predictions (no-op if unavailable)."""
         if not predictions.get("prediction_available"):
             return
         
@@ -304,7 +315,10 @@ class UserStatusMonitor:
                 ))
     
     def _detect_anomalies(self, history_data: List[Tuple]) -> List[Dict[str, Any]]:
-        """異常値の検出"""
+        """Detect active_failed outliers (beyond 2 standard deviations) and sudden completion_rate jumps.
+
+        Returns an empty list when fewer than 5 rows exist.
+        """
         anomalies = []
         
         if len(history_data) < 5:
@@ -312,14 +326,13 @@ class UserStatusMonitor:
         
         sorted_data = sorted(history_data, key=lambda x: x[0])
         
-        # active失敗数の異常値検出
         active_values = [row[1] for row in sorted_data]
         avg_active = sum(active_values) / len(active_values)
         std_active = (sum((x - avg_active) ** 2 for x in active_values) / len(active_values)) ** 0.5
         
         for i, row in enumerate(sorted_data):
             active_failed = row[1]
-            if abs(active_failed - avg_active) > 2 * std_active:  # 2σ以上の偏差
+            if abs(active_failed - avg_active) > 2 * std_active:
                 anomalies.append({
                     "type": "active_failed_spike",
                     "timestamp": row[0],
@@ -328,11 +341,10 @@ class UserStatusMonitor:
                     "severity": "high" if abs(active_failed - avg_active) > 3 * std_active else "medium"
                 })
         
-        # 完了率の急激な変化
         completion_rates = [row[4] for row in sorted_data]
         for i in range(1, len(completion_rates)):
             rate_change = abs(completion_rates[i] - completion_rates[i-1])
-            if rate_change > 0.1:  # 10%以上の急激な変化
+            if rate_change > 0.1:  # completion_rate is a 0-1 fraction
                 anomalies.append({
                     "type": "completion_rate_jump",
                     "timestamp": sorted_data[i][0],
@@ -344,7 +356,12 @@ class UserStatusMonitor:
         return anomalies
     
     def _assess_403_error_risk(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """403エラー発生リスクの評価"""
+        """Score 403-error risk (0-100) from trends, predictions and anomalies in `analysis`.
+
+        Returns:
+            Dict with risk_level (LOW/MEDIUM/HIGH/CRITICAL at scores 30/50/70),
+            risk_score, risk_factors and recommendations.
+        """
         risk_factors = []
         risk_score = 0
         
@@ -352,17 +369,14 @@ class UserStatusMonitor:
         predictions = analysis.get("predictions", {})
         anomalies = analysis.get("anomalies", [])
         
-        # active失敗数の増加トレンド
         if trends.get("active_failed_trend", {}).get("direction") == "increasing":
             risk_factors.append("Active失敗数の増加傾向")
             risk_score += 30
         
-        # 完了率の低下
         if trends.get("completion_rate_trend", {}).get("direction") == "decreasing":
             risk_factors.append("完了率の低下傾向")
             risk_score += 25
         
-        # 高リスク予測シナリオ
         if predictions.get("prediction_available"):
             for scenario in predictions.get("predicted_scenarios", {}).values():
                 if scenario.get("risk_level") == "high":
@@ -370,13 +384,11 @@ class UserStatusMonitor:
                     risk_score += 20
                     break
         
-        # 異常値の存在
         high_severity_anomalies = [a for a in anomalies if a.get("severity") == "high"]
         if high_severity_anomalies:
             risk_factors.append(f"高重要度異常値 ({len(high_severity_anomalies)}件)")
             risk_score += len(high_severity_anomalies) * 15
         
-        # リスクレベルの判定
         if risk_score >= 70:
             risk_level = "CRITICAL"
         elif risk_score >= 50:
@@ -394,7 +406,10 @@ class UserStatusMonitor:
         }
     
     def _generate_risk_recommendations(self, risk_level: str, risk_factors: List[str]) -> List[str]:
-        """リスクレベルに基づく推奨事項の生成"""
+        """Return recommendation strings for a risk level plus extras matched on risk_factors text.
+
+        The factor matching is by substring of the Japanese factor strings produced by _assess_403_error_risk.
+        """
         recommendations = []
         
         if risk_level == "CRITICAL":
@@ -423,7 +438,6 @@ class UserStatusMonitor:
                 "📋 定期監視: 通常の監視スケジュール"
             ])
         
-        # 特定のリスク要因に対する推奨事項
         for factor in risk_factors:
             if "Active失敗数の増加" in factor:
                 recommendations.append("🔍 Active失敗の詳細分析: エラータイプの分類確認")
@@ -437,7 +451,7 @@ class UserStatusMonitor:
     def create_status_alert(self, service_name: str, alert_type: str, severity: str,
                            title: str, description: str = "",
                            metrics: Dict = None, predictions: Dict = None) -> None:
-        """ユーザーステータス変化アラートの生成"""
+        """Insert a user_status_alerts row; metrics and predictions are stored as JSON."""
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             
@@ -458,11 +472,10 @@ class UserStatusMonitor:
             ))
     
     def get_monitoring_summary(self) -> Dict[str, Any]:
-        """監視状況の概要取得"""
+        """Return the latest row per service and unresolved alert counts for this session."""
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             
-            # サービス別の最新状況
             cursor.execute("""
                 SELECT service_name, active_failed, completion_rate, 
                        MAX(timestamp) as latest_timestamp
@@ -473,7 +486,6 @@ class UserStatusMonitor:
             
             services_status = cursor.fetchall()
             
-            # アクティブアラート数
             cursor.execute("""
                 SELECT COUNT(*) as total_alerts,
                        COUNT(CASE WHEN severity = 'CRITICAL' THEN 1 END) as critical_alerts,

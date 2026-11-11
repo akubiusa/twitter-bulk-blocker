@@ -1,7 +1,4 @@
-"""
-HTTPエラー統計収集・分析システム
-長期稼働時のエラーパターン詳細分析機能
-"""
+"""Collects HTTP error records in SQLite and analyzes error patterns over long-running sessions."""
 
 import json
 import sqlite3
@@ -14,24 +11,23 @@ from .database import DatabaseManager
 
 
 class HTTPErrorAnalytics:
-    """HTTP エラー統計収集・分析システム"""
+    """Stores per-session HTTP error records and hourly stats, and derives patterns and recommendations."""
     
     def __init__(self, database_manager: DatabaseManager):
         self.db = database_manager
-        self.error_timeline = []  # (timestamp, error_type, context)
+        self.error_timeline = []
         self.session_id = self._generate_session_id()
         self.init_analytics_tables()
     
     def _generate_session_id(self) -> str:
-        """セッションIDを生成"""
+        """Return a session ID of the form session_<epoch>_<YYYYmmdd_HHMMSS>."""
         return f"session_{int(time.time())}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     def init_analytics_tables(self):
-        """エラー分析用テーブルの初期化"""
+        """Create the analytics tables if they do not exist."""
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             
-            # HTTP エラー詳細ログテーブル
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS http_error_analytics (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,7 +48,7 @@ class HTTPErrorAnalytics:
                 )
             """)
             
-            # 長期パターン分析テーブル
+            # Not read or written elsewhere in this module.
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS long_term_patterns (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,7 +63,7 @@ class HTTPErrorAnalytics:
                 )
             """)
             
-            # 時間帯別エラー統計テーブル
+            # One row per (session, hour offset).
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS hourly_error_stats (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,7 +83,16 @@ class HTTPErrorAnalytics:
             print(f"📊 HTTPエラー分析テーブル初期化完了: {self.db.db_file}")
     
     def record_error_with_context(self, error_data: Dict[str, Any]) -> None:
-        """コンテキスト付きエラー記録"""
+        """Insert one error record for the current session.
+
+        Args:
+            error_data: Must contain timestamp, error_type, status_code, runtime_hours, retry_count,
+                success_rate_before and header_enhancement_active. Optional: response_text, headers
+                (stored as JSON), user_context, recovery_time_seconds, container_name.
+
+        Raises:
+            KeyError: If a required key is missing.
+        """
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -114,13 +119,19 @@ class HTTPErrorAnalytics:
     
     def update_hourly_stats(self, runtime_hours: float, error_occurred: bool, 
                           error_type: str = None, response_time: float = None) -> None:
-        """時間帯別統計の更新"""
+        """Count one request in the hourly bucket int(runtime_hours) of the current session.
+
+        Args:
+            runtime_hours: Hours since session start; truncated to the hour bucket.
+            error_occurred: Whether the request failed.
+            error_type: Counted per type when error_occurred is set.
+            response_time: Stored as avg_response_time, overwriting the previous value (not averaged).
+        """
         hour_offset = int(runtime_hours)
         
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             
-            # 既存レコードを取得または新規作成
             cursor.execute("""
                 SELECT total_requests, total_errors, error_types_json, success_rate
                 FROM hourly_error_stats 
@@ -137,7 +148,6 @@ class HTTPErrorAnalytics:
                 error_types = {}
                 current_success_rate = 1.0
             
-            # 統計更新
             total_requests += 1
             if error_occurred:
                 total_errors += 1
@@ -146,7 +156,6 @@ class HTTPErrorAnalytics:
             
             new_success_rate = (total_requests - total_errors) / total_requests if total_requests > 0 else 1.0
             
-            # レコード更新または挿入
             cursor.execute("""
                 INSERT OR REPLACE INTO hourly_error_stats 
                 (session_id, hour_offset, total_requests, total_errors, 
@@ -163,11 +172,15 @@ class HTTPErrorAnalytics:
             ))
     
     def analyze_error_progression_patterns(self) -> Dict[str, Any]:
-        """エラー進行パターンの分析"""
+        """Detect error progression patterns in the current session's hourly stats.
+
+        Returns:
+            {"status": "no_data", ...} if there is no hourly data; otherwise a dict with "status",
+            "patterns_detected", "hourly_data" and "recommendations".
+        """
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             
-            # 時間別エラー推移を取得
             cursor.execute("""
                 SELECT hour_offset, total_requests, total_errors, success_rate, error_types_json
                 FROM hourly_error_stats 
@@ -180,19 +193,18 @@ class HTTPErrorAnalytics:
             if not hourly_data:
                 return {"status": "no_data", "message": "分析に十分なデータがありません"}
             
-            # パターン分析
+            # periodic_issues and recovery_pattern are never set.
             patterns = {
-                "steady_decline": False,    # 段階的悪化
-                "sudden_spike": False,      # 急激なエラー増加
-                "periodic_issues": False,   # 周期的な問題
-                "recovery_pattern": False,  # 回復パターン
-                "critical_threshold": False # 重要閾値到達
+                "steady_decline": False,    # success rate never rises and ends below 0.8 (>= 3 hours)
+                "sudden_spike": False,      # error count more than tripled hour over hour
+                "periodic_issues": False,
+                "recovery_pattern": False,
+                "critical_threshold": False # latest success rate below 0.5
             }
             
             success_rates = [row[3] for row in hourly_data]
             error_counts = [row[2] for row in hourly_data]
             
-            # 段階的悪化の検出
             if len(success_rates) >= 3:
                 declining_trend = all(
                     success_rates[i] >= success_rates[i+1] 
@@ -201,15 +213,13 @@ class HTTPErrorAnalytics:
                 if declining_trend and success_rates[-1] < 0.8:
                     patterns["steady_decline"] = True
             
-            # 急激なエラー増加の検出
             if len(error_counts) >= 2:
                 for i in range(1, len(error_counts)):
-                    if error_counts[i] > error_counts[i-1] * 3:  # 3倍以上の増加
+                    if error_counts[i] > error_counts[i-1] * 3:
                         patterns["sudden_spike"] = True
                         break
             
-            # 重要閾値到達の検出
-            if success_rates and success_rates[-1] < 0.5:  # 成功率50%未満
+            if success_rates and success_rates[-1] < 0.5:
                 patterns["critical_threshold"] = True
             
             return {
@@ -220,7 +230,7 @@ class HTTPErrorAnalytics:
             }
     
     def _generate_pattern_recommendations(self, patterns: Dict[str, bool]) -> List[str]:
-        """パターンに基づく推奨事項の生成"""
+        """Map detected patterns to Japanese recommendation messages."""
         recommendations = []
         
         if patterns["steady_decline"]:
@@ -241,11 +251,10 @@ class HTTPErrorAnalytics:
         return recommendations
     
     def generate_weekly_analysis_report(self) -> Dict[str, Any]:
-        """週次分析レポート生成"""
+        """Build an analysis report from the last 7 days of http_error_analytics (all sessions)."""
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             
-            # 過去7日間のデータを分析
             cursor.execute("""
                 SELECT error_type, runtime_hours, COUNT(*) as frequency,
                        AVG(recovery_time_seconds) as avg_recovery,
@@ -267,12 +276,15 @@ class HTTPErrorAnalytics:
             }
     
     def _analyze_error_patterns(self, results: List[Tuple]) -> Dict[str, Any]:
-        """エラーパターンの分析"""
+        """Aggregate rows from the weekly query by error type and by runtime hour; also the top 5 types by total frequency.
+
+        Args:
+            results: Rows of (error_type, runtime_hours, frequency, avg_recovery, header_enhanced).
+        """
         error_by_type = {}
         error_by_hour = {}
         
         for error_type, runtime_hours, frequency, avg_recovery, header_enhanced in results:
-            # エラータイプ別集計
             if error_type not in error_by_type:
                 error_by_type[error_type] = {
                     "total_frequency": 0,
@@ -289,7 +301,6 @@ class HTTPErrorAnalytics:
             else:
                 error_by_type[error_type]["header_effectiveness"]["without"] += frequency
             
-            # 時間別集計
             hour_key = f"{int(runtime_hours)}h"
             if hour_key not in error_by_hour:
                 error_by_hour[hour_key] = {"total_errors": 0, "error_types": {}}
@@ -308,7 +319,11 @@ class HTTPErrorAnalytics:
         }
     
     def _analyze_header_effectiveness(self, results: List[Tuple]) -> Dict[str, Any]:
-        """ヘッダー有効性の分析"""
+        """Compare error counts with and without header enhancement.
+
+        effectiveness_score is the relative reduction of the with-headers share of errors versus the
+        without-headers share (clamped at 0). Rows are errors only, so no request totals are available.
+        """
         with_headers = {"total_errors": 0, "error_types": {}}
         without_headers = {"total_errors": 0, "error_types": {}}
         
@@ -320,7 +335,6 @@ class HTTPErrorAnalytics:
                 without_headers["total_errors"] += frequency
                 without_headers["error_types"][error_type] = without_headers["error_types"].get(error_type, 0) + frequency
         
-        # 効果性の計算
         total_with = with_headers["total_errors"]
         total_without = without_headers["total_errors"]
         total_requests = total_with + total_without
@@ -341,7 +355,7 @@ class HTTPErrorAnalytics:
         }
     
     def _analyze_runtime_correlations(self, results: List[Tuple]) -> Dict[str, Any]:
-        """稼働時間とエラーの相関分析"""
+        """Bucket errors by runtime hours and detect an upward trend and the buckets with the most errors."""
         runtime_buckets = {
             "0-1h": {"errors": 0, "types": {}},
             "1-3h": {"errors": 0, "types": {}},
@@ -355,14 +369,13 @@ class HTTPErrorAnalytics:
             runtime_buckets[bucket]["errors"] += frequency
             runtime_buckets[bucket]["types"][error_type] = runtime_buckets[bucket]["types"].get(error_type, 0) + frequency
         
-        # 相関分析
         correlations = {
             "error_increase_over_time": False,
             "critical_hours": [],
             "stable_periods": []
         }
         
-        # エラー増加傾向の検出
+        # Upward trend: more bucket-to-bucket increases than half the bucket count.
         error_counts = [bucket["errors"] for bucket in runtime_buckets.values()]
         if len(error_counts) >= 3:
             increasing_trend = sum(
@@ -371,11 +384,11 @@ class HTTPErrorAnalytics:
             ) > len(error_counts) // 2
             correlations["error_increase_over_time"] = increasing_trend
         
-        # 重要時間帯の特定
+        # Critical buckets: more than 70% of the busiest bucket errors.
         max_errors = max(bucket["errors"] for bucket in runtime_buckets.values())
         if max_errors > 0:
             for bucket_name, bucket_data in runtime_buckets.items():
-                if bucket_data["errors"] > max_errors * 0.7:  # 最大エラー数の70%以上
+                if bucket_data["errors"] > max_errors * 0.7:
                     correlations["critical_hours"].append(bucket_name)
         
         return {
@@ -385,7 +398,7 @@ class HTTPErrorAnalytics:
         }
     
     def _get_runtime_bucket(self, runtime_hours: float) -> str:
-        """稼働時間をバケットに分類"""
+        """Return the bucket label (0-1h, 1-3h, 3-6h, 6-12h, 12h+) for runtime_hours."""
         if runtime_hours < 1:
             return "0-1h"
         elif runtime_hours < 3:
@@ -398,7 +411,7 @@ class HTTPErrorAnalytics:
             return "12h+"
     
     def _generate_runtime_insights(self, runtime_buckets: Dict, correlations: Dict) -> List[str]:
-        """稼働時間分析からの洞察生成"""
+        """Turn runtime correlations into Japanese insight messages."""
         insights = []
         
         if correlations["error_increase_over_time"]:
@@ -415,10 +428,9 @@ class HTTPErrorAnalytics:
         return insights
     
     def _generate_optimization_recommendations(self, results: List[Tuple]) -> List[str]:
-        """最適化推奨事項の生成"""
+        """Generate Japanese recommendations from total error count and average recovery time."""
         recommendations = []
         
-        # エラー頻度分析
         total_errors = sum(frequency for _, _, frequency, _, _ in results)
         
         if total_errors > 100:
@@ -429,23 +441,21 @@ class HTTPErrorAnalytics:
         else:
             recommendations.append("✅ 低エラー率 - 現在の設定継続")
         
-        # 復旧時間分析
         recovery_times = [avg_recovery for _, _, _, avg_recovery, _ in results if avg_recovery]
         if recovery_times:
             avg_recovery = sum(recovery_times) / len(recovery_times)
-            if avg_recovery > 300:  # 5分以上
+            if avg_recovery > 300:  # seconds
                 recommendations.append("⏱️ 復旧時間が長い - バックオフ戦略の調整が必要")
         
         return recommendations
     
     def get_real_time_status(self) -> Dict[str, Any]:
-        """リアルタイム状態の取得"""
+        """Return the current session error count and unique error types over the last hour, plus the latest hourly bucket."""
         current_time = time.time()
         
         with sqlite3.connect(self.db.db_file) as conn:
             cursor = conn.cursor()
             
-            # 最近1時間のエラー統計
             cursor.execute("""
                 SELECT COUNT(*) as total_errors,
                        COUNT(DISTINCT error_type) as unique_error_types
@@ -455,7 +465,6 @@ class HTTPErrorAnalytics:
             
             recent_stats = cursor.fetchone()
             
-            # 最新の時間別統計
             cursor.execute("""
                 SELECT hour_offset, success_rate, total_errors
                 FROM hourly_error_stats 

@@ -1,6 +1,4 @@
-"""
-データベース管理モジュール
-"""
+"""SQLite persistence for block history and processing sessions."""
 
 import sqlite3
 from datetime import datetime
@@ -9,24 +7,22 @@ from typing import Any, Dict, List, Optional
 
 
 class DatabaseManager:
-    """SQLiteデータベース管理クラス"""
+    """Manages the SQLite database; each method opens and closes its own connection."""
 
     def __init__(self, db_file: str):
         self.db_file = db_file
         self.init_database()
 
     def init_database(self) -> None:
-        """データベースを初期化"""
+        """Create the DB directory and tables if missing."""
         try:
-            # データベースファイルのディレクトリを確保
             db_path = Path(self.db_file)
             db_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # データベース接続を試行
+
             conn = sqlite3.connect(self.db_file)
             cursor = conn.cursor()
 
-            # ブロック履歴テーブル
+            # One row per user_id; failed rows keep retry bookkeeping.
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS block_history (
@@ -46,7 +42,7 @@ class DatabaseManager:
             """
             )
 
-            # 処理ログテーブル
+            # One row per processing session.
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS process_log (
@@ -74,7 +70,12 @@ class DatabaseManager:
     def is_already_blocked(
         self, identifier: str, user_format: str = "screen_name"
     ) -> bool:
-        """ユーザーが既にブロック済みかチェック"""
+        """Return True if the user has a row with status 'blocked'.
+
+        Args:
+            identifier: user_id or screen_name, depending on user_format.
+            user_format: "user_id" or "screen_name" (anything else is treated as screen_name).
+        """
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
@@ -103,7 +104,7 @@ class DatabaseManager:
         return result is not None
 
     def get_blocked_users_count(self) -> int:
-        """ブロック済みユーザー数を取得"""
+        """Return the number of rows with status 'blocked'."""
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
@@ -114,7 +115,7 @@ class DatabaseManager:
         return count
 
     def get_blocked_users_set(self, user_format: str) -> set:
-        """ブロック済みユーザーの集合を取得"""
+        """Return the set of blocked user_ids (user_format == "user_id") or screen_names."""
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
@@ -143,7 +144,13 @@ class DatabaseManager:
         user_status: Optional[str] = None,
         retry_count: int = 0,
     ) -> None:
-        """ブロック結果をデータベースに記録"""
+        """Upsert a block result (INSERT OR REPLACE, keyed by UNIQUE user_id).
+
+        Args:
+            success: True stores status 'blocked', False stores 'failed'.
+            status_code: HTTP status code of the block request.
+            retry_count: Retries so far; last_retry_at is set to the current time.
+        """
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
@@ -173,7 +180,7 @@ class DatabaseManager:
         conn.close()
 
     def start_session(self, total_targets: int) -> int:
-        """処理セッションを開始"""
+        """Insert a process_log row and return its id."""
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
@@ -194,7 +201,7 @@ class DatabaseManager:
     def update_session(
         self, session_id: int, processed: int, blocked: int, skipped: int, errors: int
     ) -> None:
-        """処理セッションを更新"""
+        """Overwrite the progress counters of a session."""
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
@@ -211,7 +218,6 @@ class DatabaseManager:
         conn.close()
 
     def complete_session(self, session_id: int) -> None:
-        """処理セッションを完了"""
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
@@ -228,7 +234,14 @@ class DatabaseManager:
         conn.close()
 
     def get_retry_candidates(self) -> List[Dict[str, Any]]:
-        """リトライ候補のユーザーを取得"""
+        """Return failed users that are retryable and past their backoff delay.
+
+        Only rows below the retry limit with a transient-looking failure qualify,
+        oldest last_retry_at first. Rows with NULL last_retry_at are never returned.
+
+        Returns:
+            Dicts with screen_name, user_id, display_name, retry_count, user_status, last_error.
+        """
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
@@ -269,7 +282,6 @@ class DatabaseManager:
                 last_retry_str,
             ) = row
 
-            # 最後のリトライから十分時間が経過しているかチェック
             if last_retry_str:
                 last_retry = datetime.fromisoformat(last_retry_str)
                 required_delay = self._get_retry_delay(retry_count)
@@ -290,29 +302,33 @@ class DatabaseManager:
         return candidates
 
     def get_detailed_stats(self) -> Dict[str, int]:
-        """データベースから詳細統計を取得"""
+        """Return failure counters from block_history.
+
+        Keys: failed, failed_max_retries (retry limit reached), failed_retryable,
+        follow_relationship (any status), suspended, unavailable (also counts
+        not_found and deactivated). All 0 if the tables are not populated yet.
+        """
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
         stats = {
             "failed": 0,
-            "failed_max_retries": 0,  # リトライ上限に達した失敗
-            "failed_retryable": 0,    # まだリトライ可能な失敗
+            "failed_max_retries": 0,
+            "failed_retryable": 0,
             "follow_relationship": 0,
             "suspended": 0,
             "unavailable": 0,
         }
 
         try:
-            # 失敗したユーザー数
             cursor.execute("SELECT COUNT(*) FROM block_history WHERE status = 'failed'")
             stats["failed"] = cursor.fetchone()[0]
 
-            # リトライ上限に達した失敗
             cursor.execute("SELECT COUNT(*) FROM block_history WHERE status = 'failed' AND retry_count >= 10")
             stats["failed_max_retries"] = cursor.fetchone()[0]
 
-            # まだリトライ可能な失敗（suspended除く）
+            # Same transient criteria as get_retry_candidates, minus the NULL response_code and
+            # "ユーザー情報取得失敗" conditions.
             cursor.execute(
                 """
                 SELECT COUNT(*) FROM block_history 
@@ -330,33 +346,34 @@ class DatabaseManager:
             )
             stats["failed_retryable"] = cursor.fetchone()[0]
 
-            # フォロー関係でスキップしたユーザー数
             cursor.execute(
                 "SELECT COUNT(*) FROM block_history WHERE error_message LIKE '%フォロー関係%'"
             )
             stats["follow_relationship"] = cursor.fetchone()[0]
 
-            # suspendedユーザー数
             cursor.execute(
                 "SELECT COUNT(*) FROM block_history WHERE user_status = 'suspended'"
             )
             stats["suspended"] = cursor.fetchone()[0]
 
-            # 利用不可ユーザー数
             cursor.execute(
                 "SELECT COUNT(*) FROM block_history WHERE user_status IN ('unavailable', 'not_found', 'deactivated')"
             )
             stats["unavailable"] = cursor.fetchone()[0]
 
         except sqlite3.OperationalError:
-            # データベースにまだデータがない場合
             pass
 
         conn.close()
         return stats
 
     def get_failure_breakdown(self) -> Dict[str, Any]:
-        """失敗の詳細内訳を取得"""
+        """Return counts of failed rows grouped by user_status, response_code and error type.
+
+        Returns:
+            Dict with keys by_status, by_response_code and by_error_type (each a value -> count dict).
+            The error type is inferred by LIKE-matching error_message (English and Japanese keywords).
+        """
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
@@ -367,7 +384,6 @@ class DatabaseManager:
         }
 
         try:
-            # ユーザーステータス別の失敗数
             cursor.execute(
                 """
                 SELECT user_status, COUNT(*) 
@@ -379,7 +395,6 @@ class DatabaseManager:
             for status, count in cursor.fetchall():
                 breakdown["by_status"][status] = count
 
-            # HTTPステータスコード別の失敗数
             cursor.execute(
                 """
                 SELECT response_code, COUNT(*) 
@@ -391,7 +406,7 @@ class DatabaseManager:
             for code, count in cursor.fetchall():
                 breakdown["by_response_code"][code] = count
 
-            # エラータイプ別の失敗数
+            # Branch order matters: the first matching keyword wins.
             cursor.execute(
                 """
                 SELECT 
@@ -417,14 +432,13 @@ class DatabaseManager:
                 breakdown["by_error_type"][error_type] = count
 
         except sqlite3.OperationalError:
-            # データベースにまだデータがない場合
             pass
 
         conn.close()
         return breakdown
 
     def get_error_message_samples(self, limit: int = 10) -> List[str]:
-        """実際のエラーメッセージのサンプルを取得（デバッグ用）"""
+        """Return up to `limit` distinct error messages of failed rows, most recently retried first (for debugging)."""
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
@@ -444,7 +458,7 @@ class DatabaseManager:
         return samples
 
     def reset_retry_counts(self) -> int:
-        """全ての失敗ユーザーのリトライ回数をリセット"""
+        """Reset retry_count and last_retry_at of all failed rows; return the number of rows updated."""
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
@@ -463,11 +477,14 @@ class DatabaseManager:
         return affected_rows
 
     def clear_error_messages(self, identifiers: Optional[List[str]] = None, user_format: str = "screen_name") -> int:
-        """エラーメッセージをクリア
-        
+        """Set error_message to NULL on failed rows.
+
         Args:
-            identifiers: 特定のユーザーのみクリアする場合の識別子リスト（Noneで全て）
-            user_format: 識別子の形式 ("screen_name" または "user_id")
+            identifiers: Restrict to these users; None or an empty list means all failed rows.
+            user_format: "user_id" or "screen_name" (anything else is treated as screen_name).
+
+        Returns:
+            Number of rows updated.
         """
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
@@ -507,20 +524,22 @@ class DatabaseManager:
     def reset_failed_users(self, identifiers: Optional[List[str]] = None, user_format: str = "screen_name", 
                           reset_error_message: bool = True, reset_retry_count: bool = True,
                           reset_response_code: bool = True, reset_user_status: bool = True) -> int:
-        """失敗ユーザーの状態をリセット
-        
+        """Reset selected fields of failed rows to their initial state.
+
         Args:
-            identifiers: 特定のユーザーのみリセットする場合の識別子リスト（Noneで全て）
-            user_format: 識別子の形式 ("screen_name" または "user_id")
-            reset_error_message: エラーメッセージをリセットするか
-            reset_retry_count: リトライ回数をリセットするか
-            reset_response_code: レスポンスコードをリセットするか
-            reset_user_status: ユーザーステータスをリセットするか
+            identifiers: Restrict to these users; None or an empty list means all failed rows.
+            user_format: "user_id" or "screen_name" (anything else is treated as screen_name).
+            reset_error_message: Set error_message to NULL.
+            reset_retry_count: Set retry_count to 0 and last_retry_at to NULL.
+            reset_response_code: Set response_code to NULL.
+            reset_user_status: Set user_status to NULL.
+
+        Returns:
+            Number of rows updated (0 if no reset flag is set).
         """
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
-        # リセットする項目を構築
         reset_fields = []
         if reset_error_message:
             reset_fields.append("error_message = NULL")
@@ -571,7 +590,10 @@ class DatabaseManager:
         return affected_rows
 
     def is_permanent_failure(self, identifier: str, user_format: str = "screen_name") -> bool:
-        """永続的失敗アカウントかどうかをチェック"""
+        """Intended: return True if the user has a failed row that RetryManager says should not be retried.
+
+        NOTE: currently always False, because RetryManager.should_retry returns a tuple (always truthy), so `not should_retry(...)` is never True.
+        """
         from .retry import RetryManager
         
         with sqlite3.connect(self.db_file) as conn:
@@ -602,8 +624,7 @@ class DatabaseManager:
             return False
 
         user_status, response_code, error_message, retry_count = result
-        
-        # RetryManagerで永続的失敗かどうかを判定
+
         retry_manager = RetryManager()
         return not retry_manager.should_retry(
             user_status or "unknown",
@@ -613,7 +634,10 @@ class DatabaseManager:
         )
 
     def get_permanent_failure_info(self, identifier: str, user_format: str = "screen_name") -> Optional[Dict[str, Any]]:
-        """永続的失敗アカウントの詳細情報を取得"""
+        """Return details of the user's failed row, or None if there is none.
+
+        Note: the row is not checked against the retry policy; permanent_failure is always True.
+        """
         with sqlite3.connect(self.db_file) as conn:
             cursor = conn.cursor()
 
@@ -659,7 +683,14 @@ class DatabaseManager:
         }
 
     def get_permanent_failures_batch(self, identifiers: List[str], user_format: str = "screen_name") -> Dict[str, Dict[str, Any]]:
-        """複数の永続的失敗アカウントを一括取得"""
+        """Batch version of is_permanent_failure plus get_permanent_failure_info.
+
+        NOTE: currently always returns {} (same cause as is_permanent_failure: `not should_retry(...)` on a tuple is always False).
+
+        Returns:
+            Intended: dict keyed by user_id or screen_name (per user_format) of failed users that
+            RetryManager says should not be retried.
+        """
         from .retry import RetryManager
         
         if not identifiers:
@@ -671,7 +702,6 @@ class DatabaseManager:
         with sqlite3.connect(self.db_file) as conn:
             cursor = conn.cursor()
             
-            # プレースホルダーを準備
             placeholders = ",".join("?" * len(identifiers))
             str_identifiers = [str(id_) for id_ in identifiers]
             
@@ -693,7 +723,6 @@ class DatabaseManager:
             cursor.execute(query, str_identifiers)
             rows = cursor.fetchall()
         
-        # 結果を処理
         for row in rows:
             if user_format == "user_id":
                 user_id, screen_name, display_name, user_status, response_code, error_message, retry_count, blocked_at = row
@@ -701,8 +730,7 @@ class DatabaseManager:
             else:
                 screen_name, user_id, display_name, user_status, response_code, error_message, retry_count, blocked_at = row
                 key = screen_name
-            
-            # RetryManagerで永続的失敗かどうかを判定
+
             is_permanent = not retry_manager.should_retry(
                 user_status or "unknown",
                 response_code or 0,
@@ -726,5 +754,5 @@ class DatabaseManager:
         return results
 
     def _get_retry_delay(self, retry_count: int, base_delay: int = 30) -> int:
-        """リトライ間隔を計算（指数バックオフ）"""
+        """Return the exponential backoff delay in seconds."""
         return base_delay * (2**retry_count)

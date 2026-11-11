@@ -1,6 +1,4 @@
-"""
-Twitter API アクセス管理モジュール
-"""
+"""Twitter/X web API client (GraphQL and REST) used by the bulk blocker."""
 
 import json
 import random
@@ -18,20 +16,19 @@ from .error_analytics import HTTPErrorAnalytics
 
 
 class HeaderEnhancer:
-    """Twitter API用の拡張ヘッダー生成クラス"""
+    """Generates optional extra request headers and tracks whether they improve success rates."""
     
     def __init__(self, enable_forwarded_for: bool = False):
-        """
-        拡張ヘッダー生成機能を初期化
-        
+        """Initialize header generation state.
+
         Args:
-            enable_forwarded_for: x-xp-forwarded-forヘッダーの生成を有効にするか
+            enable_forwarded_for: Whether to send a synthetic x-xp-forwarded-for header.
         """
         self.enable_forwarded_for = enable_forwarded_for
         self._transaction_counter = random.randint(1000, 9999)
         self._session_ip = self._generate_session_ip() if enable_forwarded_for else None
         
-        # 効果測定用のデータ
+        # Effectiveness tracking for enhanced headers
         self.header_stats = {
             "total_requests": 0,
             "enhanced_requests": 0,
@@ -43,27 +40,23 @@ class HeaderEnhancer:
         self._max_results_history = 100
         
     def record_request_result(self, enhanced: bool, success: bool):
-        """リクエスト結果を記録して効果を測定"""
+        """Record one request outcome and refresh the success-rate stats."""
         current_time = time.time()
         
-        # 基本統計を更新
         self.header_stats["total_requests"] += 1
         if enhanced:
             self.header_stats["enhanced_requests"] += 1
         
-        # 結果履歴を記録
         self.header_stats["recent_results"].append((current_time, enhanced, success))
         
-        # 古い履歴を制限
         if len(self.header_stats["recent_results"]) > self._max_results_history:
             self.header_stats["recent_results"] = self.header_stats["recent_results"][-self._max_results_history:]
         
-        # 成功率を計算
         self._update_success_rates()
         
     def _update_success_rates(self):
-        """拡張ヘッダーあり/なしの成功率を計算"""
-        cutoff_time = time.time() - 600  # 直近10分間
+        """Recompute success rates (last 10 minutes) with and without enhanced headers, and the quality score."""
+        cutoff_time = time.time() - 600  # only the last 10 minutes
         recent_results = [
             result for result in self.header_stats["recent_results"]
             if result[0] >= cutoff_time
@@ -72,37 +65,31 @@ class HeaderEnhancer:
         if not recent_results:
             return
         
-        # 拡張ヘッダーありの成功率
         enhanced_results = [r for r in recent_results if r[1]]  # enhanced=True
         if enhanced_results:
             enhanced_success = sum(1 for r in enhanced_results if r[2])  # success=True
             self.header_stats["success_rate_enhanced"] = enhanced_success / len(enhanced_results)
         
-        # 基本ヘッダーの成功率
         basic_results = [r for r in recent_results if not r[1]]  # enhanced=False
         if basic_results:
             basic_success = sum(1 for r in basic_results if r[2])  # success=True
             self.header_stats["success_rate_basic"] = basic_success / len(basic_results)
         
-        # 品質スコアの計算（拡張ヘッダーの有効性）
         if enhanced_results and basic_results:
             improvement = self.header_stats["success_rate_enhanced"] - self.header_stats["success_rate_basic"]
             self.header_stats["quality_score"] = max(0.0, min(1.0, 0.5 + improvement))
         elif enhanced_results:
-            # 拡張ヘッダーのみの場合、成功率をスコアとする
             self.header_stats["quality_score"] = self.header_stats["success_rate_enhanced"]
     
     def should_use_enhanced_headers(self) -> bool:
-        """拡張ヘッダーを使用すべきかを判定"""
-        # 十分なデータがない場合はデフォルトで使用
+        """Return True during the initial warm-up, then while quality_score stays high enough."""
         if self.header_stats["total_requests"] < 20:
             return True
         
-        # 品質スコアが高い場合は継続使用
         return self.header_stats["quality_score"] >= 0.4
     
     def get_effectiveness_report(self) -> Dict[str, Any]:
-        """拡張ヘッダーの効果レポートを取得"""
+        """Return a summary of header stats with a use_enhanced/use_basic recommendation."""
         return {
             "total_requests": self.header_stats["total_requests"],
             "enhanced_requests": self.header_stats["enhanced_requests"],
@@ -114,32 +101,29 @@ class HeaderEnhancer:
         }
         
     def get_transaction_id(self) -> str:
-        """
-        動的なtransaction ID生成（リクエスト毎にインクリメント）
-        
+        """Return a transaction ID that increments on every call.
+
         Returns:
-            一意のtransaction ID文字列
+            Counter value as a string (starts at a random 4-digit number).
         """
         self._transaction_counter += 1
         return str(self._transaction_counter)
     
     def get_forwarded_for(self) -> Optional[str]:
-        """
-        セッション固定IPの取得
-        
+        """Return the fixed per-session IP, or None when forwarded-for is disabled.
+
         Returns:
-            生成されたIPアドレス文字列、または無効時はNone
+            IP address string, or None.
         """
         return self._session_ip if self.enable_forwarded_for else None
     
     def _generate_session_ip(self) -> str:
-        """
-        適切なIP範囲からランダムIPを生成（セッション中は固定）
-        
+        """Pick a random IPv4 address from a few hard-coded Japanese ISP-like ranges, fixed for the session.
+
         Returns:
-            日本のISP範囲を模倣したIPアドレス
+            Dotted-quad IP address string.
         """
-        # 日本の主要ISP範囲を模倣
+        # Ranges loosely imitating Japanese ISP address space (start a-b-c-d, end a-b-c-d)
         ip_ranges = [
             (126, 0, 0, 1, 126, 255, 255, 254),      # NTT Communications
             (202, 32, 0, 1, 202, 47, 255, 254),      # KDDI
@@ -158,15 +142,14 @@ class HeaderEnhancer:
         return f"{a}.{b}.{c}.{d}"
     
     def get_enhanced_headers(self) -> Dict[str, str]:
-        """
-        拡張ヘッダーの辞書を取得（Unknown error対策強化版）
-        
+        """Build the extra headers for one request.
+
         Returns:
-            拡張ヘッダーの辞書
+            x-client-transaction-id, x-client-uuid and x-request-id, plus x-xp-forwarded-for when enabled.
         """
         headers = {
             "x-client-transaction-id": self.get_transaction_id(),
-            # Unknown error対策：追加のアンチボットヘッダー
+            # Extra anti-bot headers
             "x-client-uuid": self._generate_client_uuid(),
             "x-request-id": self._generate_request_id(),
         }
@@ -178,13 +161,13 @@ class HeaderEnhancer:
         return headers
     
     def _generate_client_uuid(self) -> str:
-        """クライアントUUIDを生成（セッション中は固定）"""
+        """Return a per-session client ID (36 random hex/hyphen characters; not a valid UUID)."""
         if not hasattr(self, '_client_uuid'):
             self._client_uuid = ''.join(random.choices('0123456789abcdef-', k=36))
         return self._client_uuid
     
     def _generate_request_id(self) -> str:
-        """リクエストIDを生成（リクエスト毎に変化）"""
+        """Return '<epoch ms>-<6-digit random>', different for every request."""
         import time
         timestamp = int(time.time() * 1000)
         random_part = random.randint(100000, 999999)
@@ -192,9 +175,8 @@ class HeaderEnhancer:
 
 
 class TwitterAPI:
-    """Twitter API操作を管理するクラス"""
+    """Client for the X web GraphQL/REST endpoints, with on-disk caching and error recovery."""
 
-    # GraphQL APIエンドポイント
     USER_BY_SCREEN_NAME_ENDPOINT = (
         "https://x.com/i/api/graphql/qW5u-DAuXpMEG0zA1F7UGQ/UserByScreenName"
     )
@@ -208,7 +190,6 @@ class TwitterAPI:
         "https://x.com/i/api/graphql/a1p9RWpkYKBjWv_I3WzS-A/CreateTweet"
     )
 
-    # REST APIエンドポイント
     BLOCKS_CREATE_ENDPOINT = "https://x.com/i/api/1.1/blocks/create.json"
 
     def __init__(self, cookie_manager: CookieManager, cache_dir: str = "/data/cache", 
@@ -220,10 +201,9 @@ class TwitterAPI:
         self.debug_mode = debug_mode
         self.enable_header_enhancement = enable_header_enhancement
         
-        # セッション開始時刻の記録（長期稼働パターン検出用）
+        # Used to detect failure patterns that only appear after long runtimes
         self._session_start_time = time.time()
         
-        # ヘッダー拡張機能の初期化
         if enable_header_enhancement:
             self.header_enhancer = HeaderEnhancer(enable_forwarded_for=enable_forwarded_for)
             if debug_mode:
@@ -233,29 +213,28 @@ class TwitterAPI:
             if debug_mode:
                 print("🔧 Header enhancement disabled")
         
-        # キャッシュ構造
-        self.lookups_cache_dir = self.cache_dir / "lookups"  # screen_name -> user_id マッピング用（共有）
-        self.profiles_cache_dir = self.cache_dir / "profiles"  # 基本ユーザー情報（共有）
-        self.relationships_cache_dir = self.cache_dir / "relationships"  # 関係情報（ログインユーザー別）
+        self.lookups_cache_dir = self.cache_dir / "lookups"  # screen_name -> user_id mapping (shared)
+        self.profiles_cache_dir = self.cache_dir / "profiles"  # basic profile fields (shared)
+        self.relationships_cache_dir = self.cache_dir / "relationships"  # relationship flags (per login user)
         
         self.lookups_cache_dir.mkdir(parents=True, exist_ok=True)
         self.profiles_cache_dir.mkdir(parents=True, exist_ok=True)
         self.relationships_cache_dir.mkdir(parents=True, exist_ok=True)
         
-        self.cache_ttl = 2592000  # 30日間（秒）
-        self._login_user_id = None  # ログインユーザーIDのキャッシュ
-        self._auth_retry_count = 0  # 認証エラー時の再試行カウント
-        self._max_auth_retries = 10  # 最大認証再試行回数（Cookie更新後の信頼性向上）
+        self.cache_ttl = 2592000  # 30 days, in seconds
+        self._login_user_id = None
+        self._auth_retry_count = 0  # retries used by the current 401/account-lock recovery
+        self._max_auth_retries = 10  # max retries for 401/account-lock recovery
         
-        # エラー多発検出用
-        self._consecutive_errors = 0  # 連続エラー数
-        self._error_window_start = None  # エラー監視窓の開始時刻
-        self._error_count_in_window = 0  # 指定時間内のエラー数
-        self._error_window_duration = 1800  # 30分間のエラー監視窓（秒）
-        self._max_errors_in_window = 50  # 30分間で50回エラーでCookie再読み込み
-        self._max_consecutive_errors = 10  # 連続10回エラーでCookie再読み込み
+        # Error-burst detection (triggers a cookie reload)
+        self._consecutive_errors = 0  # consecutive errors since the last success
+        self._error_window_start = None  # start of the current error window (epoch seconds)
+        self._error_count_in_window = 0  # errors within the current window
+        self._error_window_duration = 1800  # window length in seconds (30 minutes)
+        self._max_errors_in_window = 50  # reload cookies at this many errors per window
+        self._max_consecutive_errors = 10  # reload cookies after this many consecutive errors
         
-        # 強化された403エラー対応
+        # 403 classification and recovery state
         self.retry_manager = RetryManager()
         self._403_error_stats = {
             "total_403_errors": 0,
@@ -264,27 +243,29 @@ class TwitterAPI:
             "adaptive_delays_active": True
         }
         
-        # 早期警告システム
         self.early_warning_system = {
-            "error_spike_threshold": 20,  # 5分間で20回以上で警告
-            "error_rate_threshold": 0.7,  # エラー率70%以上で警告
+            "error_spike_threshold": 20,  # warn when retry attempts reach this count
+            "error_rate_threshold": 0.7,  # warn when the error rate exceeds this fraction
             "critical_error_types": ["anti_bot", "ip_blocked", "account_restricted"],
             "warning_issued": False,
             "last_warning_time": 0,
-            "warning_cooldown": 600  # 10分間のクールダウン
+            "warning_cooldown": 600  # seconds between warnings (10 minutes)
         }
         
-        # HTTPエラー分析システムの初期化（後で設定）
+        # Assigned externally after construction
         self.error_analytics = None
 
 
     def get_user_info(self, screen_name: str) -> Optional[Dict[str, Any]]:
-        """スクリーンネームからユーザー情報を取得"""
-        # 新しいキャッシュシステムで確認
-        # 1. lookupキャッシュからuser_idを取得
+        """Look up a user by screen_name via UserByScreenName.
+
+        NOTE: the lookup-cache shortcut at the top never hits because _get_lookup_from_cache returns a dict, not a user_id.
+
+        Returns:
+            User info dict, or None on failure.
+        """
         user_id = self._get_lookup_from_cache(screen_name)
         if user_id:
-            # 2. 結合されたデータを取得
             cached_result = self._combine_profile_and_relationship(user_id)
             if cached_result:
                 print(f"[CACHE HIT] {screen_name}: キャッシュからユーザー情報を取得")
@@ -309,45 +290,34 @@ class TwitterAPI:
                 self.USER_BY_SCREEN_NAME_ENDPOINT, headers=headers, params=params
             )
 
-            # 詳細なエラー情報を記録
             self._log_response_details(response, screen_name, method_name="get_user_info")
 
-            # レートリミット検出
             if response.status_code == 429:
                 wait_seconds = self._calculate_wait_time(response)
                 wait_minutes = wait_seconds / 60
                 print(f"レートリミット検出 ({screen_name}): {wait_minutes:.1f}分間待機します")
                 time.sleep(wait_seconds)
-                # 1回だけリトライ
                 response = requests.get(
                     self.USER_BY_SCREEN_NAME_ENDPOINT, headers=headers, params=params
                 )
                 self._log_response_details(response, screen_name, method_name="get_user_info_retry")
 
-            # 認証エラー検出
             if response.status_code == 401:
                 return self._handle_auth_error(screen_name, "get_user_info", 
                                                lambda: self.get_user_info(screen_name))
 
-            # アカウントロック検出
             if self._is_account_locked(response):
                 return self._handle_account_lock_error(screen_name, "get_user_info", 
                                                        lambda: self.get_user_info(screen_name))
 
             if response.status_code == 200:
                 result = self._parse_user_response(response.json(), screen_name)
-                # 成功時は新しいキャッシュシステムに保存
                 if result is not None and result.get("id"):
-                    # lookupキャッシュにscreen_name -> user_idマッピングを保存
                     self._save_lookup_to_cache(screen_name, result["id"])
-                    # プロフィールキャッシュに基本情報を保存
                     self._save_profile_to_cache(result["id"], result)
-                    # 関係情報キャッシュに関係データを保存
                     self._save_relationship_to_cache(result["id"], result)
-                # 成功時はエラーカウンターをリセット
                 self._reset_error_counters_on_success()
                 
-                # 拡張ヘッダーの効果測定　
                 if self.header_enhancer:
                     self.header_enhancer.record_request_result(
                         enhanced=self.enable_header_enhancement,
@@ -356,10 +326,8 @@ class TwitterAPI:
                 
                 return result
 
-            # ステータスコード別のエラー表示
             error_msg, error_classification = self._get_detailed_error_message(response, screen_name)
             
-            # 拡張ヘッダーの効果測定
             if self.header_enhancer:
                 self.header_enhancer.record_request_result(
                     enhanced=self.enable_header_enhancement,
@@ -368,7 +336,6 @@ class TwitterAPI:
             
             print(f"ユーザー情報取得失敗 ({screen_name}): {error_msg}")
             
-            # エラー多発チェック
             if self._track_error_and_check_cookie_reload(screen_name, "user_info"):
                 return self._handle_frequent_errors(screen_name, "get_user_info", 
                                                    lambda: self.get_user_info(screen_name))
@@ -377,18 +344,20 @@ class TwitterAPI:
 
         except Exception as e:
             print(f"ユーザー情報取得エラー ({screen_name}): {e}")
-            # エラー多発チェック（例外でも追跡）
             if self._track_error_and_check_cookie_reload(screen_name, "exception"):
                 try:
                     return self._handle_frequent_errors(screen_name, "get_user_info", 
                                                        lambda: self.get_user_info(screen_name))
                 except:
-                    pass  # 回復に失敗した場合は通常のエラーとして扱う
+                    pass  # recovery failed: treat as a normal error
             return None
 
     def get_user_info_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """ユーザーIDからユーザー情報を取得"""
-        # 新しいキャッシュシステムで確認
+        """Look up a user by user ID, using the caches first and then UserByRestId.
+
+        Returns:
+            User info dict, or None on failure.
+        """
         cached_result = self._combine_profile_and_relationship(user_id)
         if cached_result is not None:
             print(f"[CACHE HIT] ID:{user_id}: キャッシュからユーザー情報を取得")
@@ -413,45 +382,35 @@ class TwitterAPI:
                 self.USER_BY_REST_ID_ENDPOINT, headers=headers, params=params
             )
 
-            # 詳細なエラー情報を記録
             self._log_response_details(response, user_id, method_name="get_user_info_by_id")
 
-            # レートリミット検出
             if response.status_code == 429:
                 wait_seconds = self._calculate_wait_time(response)
                 wait_minutes = wait_seconds / 60
                 print(f"レートリミット検出 (ID: {user_id}): {wait_minutes:.1f}分間待機します")
                 time.sleep(wait_seconds)
-                # 1回だけリトライ
                 response = requests.get(
                     self.USER_BY_REST_ID_ENDPOINT, headers=headers, params=params
                 )
                 self._log_response_details(response, user_id, method_name="get_user_info_by_id_retry")
 
-            # 認証エラー検出
             if response.status_code == 401:
                 return self._handle_auth_error(user_id, "get_user_info_by_id", 
                                                lambda: self.get_user_info_by_id(user_id))
 
-            # アカウントロック検出
             if self._is_account_locked(response):
                 return self._handle_account_lock_error(user_id, "get_user_info_by_id", 
                                                        lambda: self.get_user_info_by_id(user_id))
 
             if response.status_code == 200:
                 result = self._parse_user_response(response.json(), user_id)
-                # 成功時は新しいキャッシュシステムに保存
                 if result is not None and result.get("id"):
-                    # プロフィールキャッシュに基本情報を保存
                     self._save_profile_to_cache(result["id"], result)
-                    # 関係情報キャッシュに関係データを保存
                     self._save_relationship_to_cache(result["id"], result)
                 return result
 
-            # ステータスコード別のエラー表示
             error_msg, error_classification = self._get_detailed_error_message(response, user_id)
             
-            # 拡張ヘッダーの効果測定
             if self.header_enhancer:
                 self.header_enhancer.record_request_result(
                     enhanced=self.enable_header_enhancement,
@@ -466,36 +425,41 @@ class TwitterAPI:
             return None
 
     def get_users_info_by_screen_names(self, screen_names: List[str], batch_size: int = 50) -> Dict[str, Dict[str, Any]]:
-        """複数のscreen_nameからユーザー情報を取得（2段階処理）"""
+        """Look up many users by screen_name.
+
+        Cached users are resolved locally, unknown names are fetched one by one, and missing relationship data is fetched in batches.
+
+        Args:
+            screen_names: Screen names to look up.
+            batch_size: User IDs per UsersByRestIds request.
+
+        Returns:
+            Dict of screen_name -> user info (None when the lookup failed).
+        """
         results = {}
         
-        # Step 1: screen_name毎に処理を決定
-        need_relationship_fetch = []  # (screen_name, user_id)のタプルのリスト
+        # Step 1: resolve each screen_name from the caches, or fetch it individually
+        need_relationship_fetch = []  # (screen_name, user_id) pairs that still need relationship data
         
         for screen_name in screen_names:
-            # lookupキャッシュから確認
             lookup_data = self._get_lookup_from_cache(screen_name)
             
             if lookup_data and lookup_data.get('user_id'):
-                # キャッシュからuser_idを取得した場合
                 user_id = lookup_data['user_id']
                 print(f"[LOOKUP CACHE HIT] {screen_name} -> {user_id}")
                 
-                # プロフィール + 関係情報の結合を試行
                 combined_data = self._combine_profile_and_relationship(user_id)
                 if combined_data:
-                    combined_data['screen_name'] = screen_name  # screen_nameを追加
+                    combined_data['screen_name'] = screen_name
                     results[screen_name] = combined_data
                     print(f"[COMBINED CACHE HIT] {screen_name} (ID: {user_id})")
                 else:
-                    # 関係情報の取得が必要
                     need_relationship_fetch.append((screen_name, user_id))
             else:
-                # APIからUserByScreenNameを取得（関係情報込み）
+                # Cache miss: UserByScreenName also returns relationship flags
                 user_info = self.get_user_info(screen_name)
                 if user_info:
                     results[screen_name] = user_info
-                    # 各キャッシュに保存
                     if user_info.get('id'):
                         self._save_lookup_to_cache(screen_name, user_info['id'])
                         self._save_profile_to_cache(user_info['id'], user_info)
@@ -503,24 +467,22 @@ class TwitterAPI:
                 else:
                     results[screen_name] = None
         
-        # Step 2: 関係情報が必要なユーザーをバッチ取得
+        # Step 2: batch-fetch relationship data for the remaining users
         if need_relationship_fetch:
             print(f"\n[RELATIONSHIP BATCH] {len(need_relationship_fetch)}件の関係情報をバッチ取得")
             user_ids = [user_id for _, user_id in need_relationship_fetch]
             
-            # バッチ処理
             for i in range(0, len(user_ids), batch_size):
                 batch_ids = user_ids[i:i + batch_size]
                 batch_results = self._fetch_users_batch(batch_ids)
                 
-                # 結果をscreen_nameベースで格納
+                # Re-key the batch results by screen_name
                 for screen_name, user_id in need_relationship_fetch:
                     if user_id in batch_ids:
                         user_data = batch_results.get(user_id)
                         if user_data:
-                            user_data['screen_name'] = screen_name  # screen_nameを追加
+                            user_data['screen_name'] = screen_name
                             results[screen_name] = user_data
-                            # 両方のキャッシュに保存
                             self._save_profile_to_cache(user_id, user_data)
                             self._save_relationship_to_cache(user_id, user_data)
                         else:
@@ -529,10 +491,17 @@ class TwitterAPI:
         return results
 
     def get_users_info_batch(self, user_ids: List[str], batch_size: int = 50) -> Dict[str, Dict[str, Any]]:
-        """複数ユーザーIDから一括でユーザー情報を取得"""
+        """Look up many users by user ID, using the cache and batched UsersByRestIds requests.
+
+        Args:
+            user_ids: User IDs to look up.
+            batch_size: User IDs per request.
+
+        Returns:
+            Dict of user ID -> user info (None when missing).
+        """
         results = {}
         
-        # 結合キャッシュから取得済みのものをチェック
         uncached_ids = []
         for user_id in user_ids:
             combined_result = self._combine_profile_and_relationship(user_id)
@@ -548,22 +517,24 @@ class TwitterAPI:
         
         print(f"[BATCH] {len(uncached_ids)}/{len(user_ids)}ユーザーをAPI取得")
         
-        # 未キャッシュのユーザーを一括取得
         for i in range(0, len(uncached_ids), batch_size):
             batch_ids = uncached_ids[i:i + batch_size]
             batch_results = self._fetch_users_batch(batch_ids)
             
-            # 結果をマージし、キャッシュに保存
             for user_id, user_data in batch_results.items():
                 results[user_id] = user_data
-                if user_data:  # Noneでない場合のみキャッシュ
+                if user_data:
                     self._save_profile_to_cache(user_id, user_data)
                     self._save_relationship_to_cache(user_id, user_data)
         
         return results
 
     def _fetch_users_batch(self, user_ids: List[str]) -> Dict[str, Optional[Dict[str, Any]]]:
-        """UsersByRestIds APIで一括ユーザー情報取得"""
+        """Fetch users with one UsersByRestIds request.
+
+        Returns:
+            Dict of user ID -> user info; None for IDs missing from the response or on error.
+        """
         try:
             cookies = self.cookie_manager.load_cookies()
             headers = self._build_graphql_headers(cookies)
@@ -581,27 +552,22 @@ class TwitterAPI:
                 self.USERS_BY_REST_IDS_ENDPOINT, headers=headers, params=params
             )
 
-            # 詳細なエラー情報を記録
             self._log_response_details(response, f"batch({len(user_ids)}users)", method_name="get_users_batch")
 
-            # レートリミット検出
             if response.status_code == 429:
                 wait_seconds = self._calculate_wait_time(response)
                 wait_minutes = wait_seconds / 60
                 print(f"レートリミット検出 (batch): {wait_minutes:.1f}分間待機します")
                 time.sleep(wait_seconds)
-                # 1回だけリトライ
                 response = requests.get(
                     self.USERS_BY_REST_IDS_ENDPOINT, headers=headers, params=params
                 )
                 self._log_response_details(response, f"batch({len(user_ids)}users)", method_name="get_users_batch_retry")
 
-            # 認証エラー検出
             if response.status_code == 401:
                 return self._handle_auth_error(f"batch({len(user_ids)}users)", "get_users_batch", 
                                                lambda: self._fetch_users_batch(user_ids))
 
-            # アカウントロック検出
             if self._is_account_locked(response):
                 return self._handle_account_lock_error(f"batch({len(user_ids)}users)", "get_users_batch", 
                                                        lambda: self._fetch_users_batch(user_ids))
@@ -609,10 +575,8 @@ class TwitterAPI:
             if response.status_code == 200:
                 return self._parse_users_batch_response(response.json(), user_ids)
 
-            # ステータスコード別のエラー表示
             error_msg, error_classification = self._get_detailed_error_message(response, f"batch({len(user_ids)}users)")
             
-            # 拡張ヘッダーの効果測定
             if self.header_enhancer:
                 self.header_enhancer.record_request_result(
                     enhanced=self.enable_header_enhancement,
@@ -621,7 +585,7 @@ class TwitterAPI:
             
             print(f"一括ユーザー情報取得失敗: {error_msg}")
             
-            # エラー時は空の辞書を返す
+            # On failure every requested ID maps to None
             return {user_id: None for user_id in user_ids}
 
         except Exception as e:
@@ -629,7 +593,10 @@ class TwitterAPI:
             return {user_id: None for user_id in user_ids}
 
     def _parse_users_batch_response(self, data: Dict[str, Any], requested_ids: List[str]) -> Dict[str, Optional[Dict[str, Any]]]:
-        """一括ユーザー情報レスポンスを解析"""
+        """Convert a UsersByRestIds response to a dict of user ID -> user info.
+
+        Requested IDs absent from the response map to None.
+        """
         results = {}
         
         if "data" in data and "users" in data["data"]:
@@ -639,13 +606,12 @@ class TwitterAPI:
                 if "result" in user_entry:
                     result = user_entry["result"]
                     
-                    # 各ユーザーを個別の_parse_user_responseで処理
                     user_info = self._parse_single_user_from_batch(result)
                     
                     if user_info and user_info.get("id"):
                         results[user_info["id"]] = user_info
         
-        # リクエストされたIDでレスポンスにないものはNoneとして記録
+        # IDs missing from the response map to None
         for user_id in requested_ids:
             if user_id not in results:
                 results[user_id] = None
@@ -653,13 +619,11 @@ class TwitterAPI:
         return results
 
     def _parse_single_user_from_batch(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """一括取得レスポンスから単一ユーザー情報を解析"""
-        # ユーザーのTypeNameをチェック
+        """Parse one entry of a batch response; return None if it has neither UserUnavailable nor legacy data."""
         typename = result.get("__typename", "User")
         user_status = "active"
 
         if typename == "UserUnavailable":
-            # ユーザーが利用不可
             user_status = "unavailable"
             if "reason" in result:
                 user_status = result["reason"].lower()
@@ -680,9 +644,8 @@ class TwitterAPI:
         if "legacy" in result:
             legacy = result["legacy"]
             
-            # フォロー関係の取得
             following = legacy.get("following", False)
-            # SuperFollowsを考慮
+            # Fall back to super_following (Super Follows) when not following normally
             if not following and "super_following" in legacy:
                 following = legacy.get("super_following", False)
 
@@ -702,16 +665,19 @@ class TwitterAPI:
         return None
 
     def _fetch_screen_names_batch(self, screen_names: List[str]) -> Dict[str, Optional[Dict[str, Any]]]:
-        """複数のscreen_nameを並行して取得（個別APIの並行実行）"""
+        """Fetch several screen_names sequentially (0.1 s apart when more than one).
+
+        Returns:
+            Dict of screen_name -> user info (None on error).
+        """
         results = {}
         
-        # 並行処理の代わりに、レート制限を考慮した順次処理を実装
+        # Sequential on purpose, with a short delay, to stay under the rate limit
         for screen_name in screen_names:
             try:
                 user_info = self._fetch_single_screen_name(screen_name)
                 results[screen_name] = user_info
                 
-                # 短い間隔で待機（レート制限対策）
                 if len(screen_names) > 1:
                     time.sleep(0.1)
                     
@@ -723,7 +689,7 @@ class TwitterAPI:
 
 
     def _fetch_single_screen_name_lookup(self, screen_name: str) -> Optional[Dict[str, Any]]:
-        """単一のscreen_nameからuser_idを取得（lookup専用・関係情報なし）"""
+        """Fetch only id, screen_name and name for a screen_name (no relationship flags)."""
         try:
             cookies = self.cookie_manager.load_cookies()
             headers = self._build_graphql_headers(cookies)
@@ -731,8 +697,8 @@ class TwitterAPI:
             params = {
                 "variables": json.dumps({
                     "screen_name": screen_name,
-                    "withSafetyModeUserFields": False,  # 関係情報不要
-                    "withSuperFollowsUserFields": False,  # 関係情報不要
+                    "withSafetyModeUserFields": False,  # relationship flags not needed
+                    "withSuperFollowsUserFields": False,  # relationship flags not needed
                 }),
                 "features": json.dumps(self._get_graphql_features()),
             }
@@ -741,7 +707,7 @@ class TwitterAPI:
                 self.USER_BY_SCREEN_NAME_ENDPOINT, headers=headers, params=params
             )
 
-            # 基本的なエラーハンドリングのみ
+            # Minimal error handling: no error counters or analytics
             if response.status_code == 429:
                 wait_seconds = self._calculate_wait_time(response)
                 print(f"  レートリミット検出 ({screen_name}): {wait_seconds/60:.1f}分間待機")
@@ -759,7 +725,6 @@ class TwitterAPI:
                                                        lambda: self._fetch_single_screen_name_lookup(screen_name))
 
             if response.status_code == 200:
-                # 基本情報のみ解析（関係情報なし）
                 return self._parse_lookup_response(response.json(), screen_name)
 
             return None
@@ -769,7 +734,7 @@ class TwitterAPI:
             return None
 
     def _parse_lookup_response(self, data: Dict[str, Any], screen_name: str) -> Optional[Dict[str, Any]]:
-        """lookup専用レスポンス解析（IDと基本情報のみ）"""
+        """Extract id, screen_name and name from a UserByScreenName response; None if there is no legacy data."""
         if (
             "data" in data
             and "user" in data["data"]
@@ -787,7 +752,7 @@ class TwitterAPI:
         return None
 
     def _fetch_single_screen_name(self, screen_name: str) -> Optional[Dict[str, Any]]:
-        """単一のscreen_nameを取得（get_user_infoの軽量版）"""
+        """Fetch one user via UserByScreenName with minimal error handling (no caching, no error-burst tracking)."""
         try:
             cookies = self.cookie_manager.load_cookies()
             headers = self._build_graphql_headers(cookies)
@@ -805,24 +770,20 @@ class TwitterAPI:
                 self.USER_BY_SCREEN_NAME_ENDPOINT, headers=headers, params=params
             )
 
-            # レートリミット検出（基本チェックのみ）
             if response.status_code == 429:
                 wait_seconds = self._calculate_wait_time(response)
                 wait_minutes = wait_seconds / 60
                 print(f"  レートリミット検出 ({screen_name}): {wait_minutes:.1f}分間待機します")
                 time.sleep(wait_seconds)
                 
-                # 1回だけリトライ
                 response = requests.get(
                     self.USER_BY_SCREEN_NAME_ENDPOINT, headers=headers, params=params
                 )
 
-            # 認証エラー検出
             if response.status_code == 401:
                 return self._handle_auth_error(screen_name, "_fetch_single_screen_name", 
                                                lambda: self._fetch_single_screen_name(screen_name))
 
-            # アカウントロック検出
             if self._is_account_locked(response):
                 return self._handle_account_lock_error(screen_name, "_fetch_single_screen_name", 
                                                        lambda: self._fetch_single_screen_name(screen_name))
@@ -830,10 +791,8 @@ class TwitterAPI:
             if response.status_code == 200:
                 return self._parse_user_response(response.json(), screen_name)
 
-            # エラーの場合
             error_msg, error_classification = self._get_detailed_error_message(response, screen_name)
             
-            # 拡張ヘッダーの効果測定
             if self.header_enhancer:
                 self.header_enhancer.record_request_result(
                     enhanced=self.enable_header_enhancement,
@@ -848,7 +807,11 @@ class TwitterAPI:
             return None
 
     def block_user(self, user_id: str, screen_name: str) -> Dict[str, Any]:
-        """REST APIでユーザーをブロック"""
+        """Block a user via the REST blocks/create endpoint.
+
+        Returns:
+            {'success': True, 'status_code': 200} on success, otherwise {'success': False, 'status_code': ..., 'message': ...}.
+        """
         try:
             cookies = self.cookie_manager.load_cookies()
             headers = self._build_rest_headers(cookies)
@@ -859,43 +822,35 @@ class TwitterAPI:
                 self.BLOCKS_CREATE_ENDPOINT, headers=headers, data=data
             )
 
-            # レートリミット検出
             if response.status_code == 429:
                 wait_seconds = self._calculate_wait_time(response)
                 wait_minutes = wait_seconds / 60
                 print(f"レートリミット検出 (block): {wait_minutes:.1f}分間待機します")
                 time.sleep(wait_seconds)
-                # 1回だけリトライ
                 response = requests.post(
                     self.BLOCKS_CREATE_ENDPOINT, headers=headers, data=data
                 )
 
-            # 認証エラー検出
             if response.status_code == 401:
                 return self._handle_auth_error(f"block {screen_name}", "block_user", 
                                                lambda: self.block_user(user_id, screen_name))
 
-            # アカウントロック検出
             if self._is_account_locked(response):
                 return self._handle_account_lock_error(f"block {screen_name}", "block_user", 
                                                        lambda: self.block_user(user_id, screen_name))
 
             if response.status_code == 200:
-                # 成功時はエラーカウンターをリセット
                 self._reset_error_counters_on_success()
                 return {"success": True, "status_code": 200}
 
-            # その他のエラー
             error_msg, error_classification = self._get_detailed_error_message(response, f"block {screen_name}")
             
-            # 拡張ヘッダーの効果測定
             if self.header_enhancer:
                 self.header_enhancer.record_request_result(
                     enhanced=self.enable_header_enhancement,
                     success=False
                 )
             
-            # エラー多発チェック
             if self._track_error_and_check_cookie_reload(f"block {screen_name}", "block"):
                 return self._handle_frequent_errors(f"block {screen_name}", "block_user", 
                                                    lambda: self.block_user(user_id, screen_name))
@@ -907,13 +862,12 @@ class TwitterAPI:
             }
 
         except Exception as e:
-            # エラー多発チェック（例外でも追跡）
             if self._track_error_and_check_cookie_reload(f"block {screen_name}", "exception"):
                 try:
                     return self._handle_frequent_errors(f"block {screen_name}", "block_user", 
                                                        lambda: self.block_user(user_id, screen_name))
                 except:
-                    pass  # 回復に失敗した場合は通常のエラーとして扱う
+                    pass  # recovery failed: treat as a normal error
             
             return {
                 "success": False,
@@ -922,20 +876,23 @@ class TwitterAPI:
             }
 
     def _calculate_wait_time(self, response: requests.Response) -> int:
-        """レートリミット時の待機時間を動的に計算"""
-        # レートリミットヘッダーから情報を取得
+        """Compute how long to wait after a 429.
+
+        Uses x-rate-limit-reset plus a 10 s margin, clamped to 60-900 s; falls back to 300 s when the header is missing or invalid.
+
+        Returns:
+            Wait time in seconds.
+        """
+        # x-rate-limit-reset is a Unix timestamp
         reset_timestamp = response.headers.get('x-rate-limit-reset')
         
         if reset_timestamp:
             try:
-                # リセット時刻（UNIX timestamp）
                 reset_time = int(reset_timestamp)
-                # 現在時刻（UNIX timestamp）
                 current_time = int(time.time())
-                # 待機時間を計算（秒）
                 wait_seconds = max(reset_time - current_time, 0)
                 
-                # リセット時刻を人間が読める形式で表示（Asia/Tokyoタイムゾーン）
+                # Log the reset time in JST
                 tokyo_tz = pytz.timezone('Asia/Tokyo')
                 reset_datetime = datetime.fromtimestamp(reset_time, tz=tokyo_tz)
                 formatted_time = reset_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')
@@ -943,17 +900,15 @@ class TwitterAPI:
                 print(f"  レートリミットリセット時刻: {formatted_time}")
                 print(f"  待機時間: {wait_seconds}秒 ({wait_seconds/60:.1f}分)")
                 
-                # 最低でも60秒、最大で15分の待機
-                return max(60, min(wait_seconds + 10, 900))  # 10秒の余裕を追加
+                return max(60, min(wait_seconds + 10, 900))  # 10 s margin
             except (ValueError, TypeError):
                 pass
         
-        # ヘッダーから取得できない場合のデフォルト値
         print("  レートリミット情報を取得できませんでした。デフォルトの待機時間を使用します")
-        return 300  # デフォルト5分
+        return 300  # default: 5 minutes
 
     def _build_graphql_headers(self, cookies: Dict[str, str]) -> Dict[str, str]:
-        """GraphQL API用のヘッダーを構築"""
+        """Build GraphQL request headers from the cookies (ct0 as CSRF token, auth_token as x-twitter-auth-token), adding enhanced headers when enabled."""
         csrf_token = cookies.get("ct0", "")
         auth_token = cookies.get("auth_token", "")
 
@@ -978,26 +933,23 @@ class TwitterAPI:
             "x-twitter-client-language": "ja",
         }
 
-        # 拡張ヘッダーの追加
         if self.header_enhancer:
             enhanced_headers = self.header_enhancer.get_enhanced_headers()
             headers.update(enhanced_headers)
             
-            # デバッグ情報の出力
             if self.debug_mode:
                 self._log_enhanced_headers(enhanced_headers, "GraphQL")
         else:
-            # 拡張ヘッダー無効時は従来の固定値を使用
+            # Fixed transaction ID when header enhancement is disabled
             headers["x-client-transaction-id"] = "0"
 
-        # auth_tokenが存在する場合のみヘッダーを追加
         if auth_token:
             headers["x-twitter-auth-token"] = auth_token
 
         return headers
 
     def _build_rest_headers(self, cookies: Dict[str, str]) -> Dict[str, str]:
-        """REST API用のヘッダーを構築"""
+        """Build REST request headers from the cookies, adding enhanced headers when enabled."""
         csrf_token = cookies.get("ct0", "")
 
         headers = {
@@ -1022,19 +974,17 @@ class TwitterAPI:
             "x-twitter-client-language": "ja",
         }
 
-        # 拡張ヘッダーの追加
         if self.header_enhancer:
             enhanced_headers = self.header_enhancer.get_enhanced_headers()
             headers.update(enhanced_headers)
             
-            # デバッグ情報の出力
             if self.debug_mode:
                 self._log_enhanced_headers(enhanced_headers, "REST")
 
         return headers
 
     def _log_enhanced_headers(self, enhanced_headers: Dict[str, str], endpoint_type: str):
-        """拡張ヘッダーのデバッグログ出力"""
+        """Print the enhanced headers (debug mode only)."""
         print(f"\n[ENHANCED HEADERS - {endpoint_type}]")
         for key, value in enhanced_headers.items():
             if key == "x-xp-forwarded-for":
@@ -1043,7 +993,7 @@ class TwitterAPI:
                 print(f"  {key}: {value}")
 
     def _get_graphql_features(self) -> Dict[str, bool]:
-        """GraphQL API用のフィーチャーフラグを取得"""
+        """Return the feature flags sent with every GraphQL request."""
         return {
             "hidden_profile_likes_enabled": True,
             "hidden_profile_subscriptions_enabled": True,
@@ -1062,7 +1012,15 @@ class TwitterAPI:
     def _parse_user_response(
         self, data: Dict[str, Any], identifier: str
     ) -> Optional[Dict[str, Any]]:
-        """APIレスポンスからユーザー情報を解析"""
+        """Parse a UserByScreenName/UserByRestId response into a user dict.
+
+        Args:
+            data: Decoded JSON response.
+            identifier: Screen name or user ID the request was made for.
+
+        Returns:
+            User info dict, or None when the response has no usable result.
+        """
         if (
             "data" in data
             and "user" in data["data"]
@@ -1070,18 +1028,14 @@ class TwitterAPI:
         ):
             result = data["data"]["user"]["result"]
 
-            # ユーザーのTypeNameをチェック
             typename = result.get("__typename", "User")
 
-            # ユーザーステータスの判定
             user_status = "active"
             if typename == "UserUnavailable":
-                # ユーザーが利用不可の場合
                 user_status = "unavailable"
                 if "reason" in result:
                     user_status = result["reason"].lower()
 
-                # 利用不可能なユーザーの基本情報
                 return {
                     "id": result.get("rest_id"),
                     "screen_name": identifier if "@" in identifier else None,
@@ -1095,13 +1049,11 @@ class TwitterAPI:
                     "unavailable": True,
                 }
 
-            # 通常のユーザー情報
             if "legacy" in result:
                 legacy = result["legacy"]
                 
-                # フォロー関係の取得
                 following = legacy.get("following", False)
-                # SuperFollowsを考慮
+                # Fall back to super_following (Super Follows) when not following normally
                 if not following and "super_following" in legacy:
                     following = legacy.get("super_following", False)
 
@@ -1121,14 +1073,18 @@ class TwitterAPI:
         return None
     
     def _log_response_details(self, response: requests.Response, identifier: str, method_name: str = "") -> None:
-        """レスポンスの詳細情報をログ出力"""
+        """Print status, rate-limit info and error details of a response.
+
+        Args:
+            response: The HTTP response.
+            identifier: Screen name or user ID, shown in the log header.
+            method_name: Caller label, shown in the log header.
+        """
         try:
-            # ステータスコードと基本情報
             print(f"\n[API Response - {method_name}] {identifier}")
             print(f"  Status Code: {response.status_code}")
-            print(f"  Debug Mode: {self.debug_mode}")  # デバッグモード状態を明示
+            print(f"  Debug Mode: {self.debug_mode}")
             
-            # レートリミット情報
             if hasattr(response, 'headers'):
                 rate_limit = response.headers.get('x-rate-limit-limit')
                 rate_remaining = response.headers.get('x-rate-limit-remaining')
@@ -1141,22 +1097,18 @@ class TwitterAPI:
                         reset_time = datetime.fromtimestamp(int(rate_reset), tz=tokyo_tz)
                         print(f"  Reset Time: {reset_time.strftime('%Y-%m-%d %H:%M:%S %Z')}")
                 
-                # デバッグモードまたは403エラーの場合は追加情報を表示
                 if self.debug_mode or response.status_code == 403:
                     print(f"  Content-Type: {response.headers.get('content-type', 'N/A')}")
                     print(f"  Content-Length: {response.headers.get('content-length', 'N/A')}")
-                    # 403エラーの場合は全ヘッダーを表示
                     if response.status_code == 403:
                         print("  === 全ヘッダー情報 ===")
                         for key, value in response.headers.items():
                             print(f"  {key}: {value}")
         except Exception as e:
             print(f"  ログ出力エラー: {e}")
-            # デバッグ用：例外の詳細も表示
             import traceback
             print(f"  詳細エラー: {traceback.format_exc()}")
 
-        # エラー時の詳細情報
         if hasattr(response, 'status_code') and response.status_code >= 400:
             try:
                 error_data = response.json()
@@ -1166,12 +1118,11 @@ class TwitterAPI:
                         if 'code' in error:
                             print(f"  エラーコード: {error['code']}")
                 else:
-                    # JSON形式だがerrorsフィールドがない場合
+                    # Valid JSON without an 'errors' key
                     print(f"  レスポンスJSON: {json.dumps(error_data, ensure_ascii=False, indent=2)[:500]}")
             except Exception as json_error:
                 print(f"  JSON解析エラー: {json_error}")
                 if hasattr(response, 'text'):
-                    # 403エラーまたはデバッグモードの場合は全文表示
                     if response.status_code == 403 or self.debug_mode:
                         print(f"  レスポンステキスト全文:")
                         print(f"  {response.text}")
@@ -1181,7 +1132,18 @@ class TwitterAPI:
                     print(f"  レスポンス詳細取得不可")
 
     def _get_detailed_error_message(self, response: requests.Response, identifier: str) -> Tuple[str, Optional[str]]:
-        """詳細なエラーメッセージとエラー分類を生成"""
+        """Build a human-readable message for a failed response.
+
+        For a 403 whose body has no JSON "errors", this also classifies the error and updates the 403 stats, error_analytics and early warnings.
+
+        Args:
+            response: The failed HTTP response.
+            identifier: Screen name or user ID, used in log output.
+
+        Returns:
+            (message, error_type); error_type is the 403 classification, or None otherwise.
+            NOTE: currently returns a bare str (not a tuple) when the JSON body has "errors", which breaks callers' tuple unpacking.
+        """
         status_messages = {
             400: "不正なリクエスト",
             401: "認証エラー（Cookieが無効）",
@@ -1196,7 +1158,7 @@ class TwitterAPI:
         status_code = getattr(response, 'status_code', 0)
         base_msg = status_messages.get(status_code, f"HTTPエラー {status_code}")
         
-        # JSONレスポンスからエラー詳細を取得
+        # Prefer the API's own error messages when the body is JSON
         try:
             if hasattr(response, 'json'):
                 error_data = response.json()
@@ -1213,7 +1175,6 @@ class TwitterAPI:
         except:
             pass
         
-        # 403エラーの詳細分類
         if status_code == 403:
             response_text = ""
             try:
@@ -1228,15 +1189,14 @@ class TwitterAPI:
                 status_code=status_code
             )
             
-            # 統計更新
             self._403_error_stats["total_403_errors"] += 1
             if error_type not in self._403_error_stats["classified_errors"]:
                 self._403_error_stats["classified_errors"][error_type] = 0
             self._403_error_stats["classified_errors"][error_type] += 1
             
-            # 403エラー専用処理：Cookie強制更新（無限ループ防止）
+            # After 20 accumulated 403s, ask CookieManager to force a cookie refresh, then pause
             def reset_403_errors():
-                """403エラー統計の強制リセット"""
+                """Reset the 403 counters (reset callback for CookieManager)."""
                 self._403_error_stats["total_403_errors"] = 0
                 self._403_error_stats["classified_errors"] = {}
                 
@@ -1244,39 +1204,36 @@ class TwitterAPI:
                 self._403_error_stats["total_403_errors"], threshold=20, reset_callback=reset_403_errors):
                 print(f"🔄 403エラー蓄積による強制リトライ対象: {identifier}")
                 print(f"⏸️ 緊急停止: 20回エラー到達により処理を一時停止しました")
-                # Cookie更新後の待機時間を追加（無限ループ防止）
+                # Pause after the forced refresh so repeated 403s cannot trigger an endless refresh loop (see a6aa041)
                 import time
-                time.sleep(10)  # より長い待機時間
-                # Note: リトライは呼び出し元で実装
+                time.sleep(10)
+                # Retrying is the caller's responsibility
             
-            # HTTPエラー分析システムへの記録
             if self.error_analytics:
                 runtime_hours = (time.time() - self._session_start_time) / 3600
                 self.error_analytics.record_error_with_context({
                     'timestamp': time.time(),
                     'error_type': error_type,
                     'status_code': status_code,
-                    'response_text': response_text[:1000],  # 最初の1000文字のみ
+                    'response_text': response_text[:1000],  # truncated
                     'headers': dict(headers),
                     'runtime_hours': runtime_hours,
-                    'retry_count': 0,  # 初回エラー
-                    'success_rate_before': 1.0,  # TODO: 実際の成功率計算
+                    'retry_count': 0,  # always 0 here; not tracked
+                    'success_rate_before': 1.0,  # TODO: compute the real success rate
                     'header_enhancement_active': self.enable_header_enhancement,
                     'user_context': f"Priority: {priority}, Description: {description}",
-                    'container_name': 'unknown'  # TODO: コンテナ名の取得
+                    'container_name': 'unknown'  # TODO: look up the real container name
                 })
                 
-                # 時間帯別統計の更新
                 self.error_analytics.update_hourly_stats(
                     runtime_hours=runtime_hours,
                     error_occurred=True,
                     error_type=error_type
                 )
             
-            # 早期警告システムのチェック
             self._check_early_warning_conditions(error_type)
             
-            # アカウントロックの確認（従来ロジックも保持）
+            # Only changes the wording of the message
             if self._is_account_locked(response):
                 detailed_msg = f"{base_msg} - アカウントロック [Type: {error_type}] {description}"
             else:
@@ -1287,15 +1244,13 @@ class TwitterAPI:
         return base_msg, None
 
     def _is_account_locked(self, response: requests.Response) -> bool:
-        """アカウントロック状態を検出"""
-        # HTTP 403 + 特定のエラーメッセージでアカウントロックを判定
+        """Return True for a 403 whose error message indicates a locked or suspicious account."""
         if hasattr(response, 'status_code') and response.status_code == 403:
             try:
                 error_data = response.json()
                 if 'errors' in error_data:
                     for error in error_data['errors']:
                         message = error.get('message', '').lower()
-                        # アカウントロックを示すメッセージパターン
                         if any(pattern in message for pattern in [
                             'account is temporarily locked',
                             'account has been locked',
@@ -1308,35 +1263,48 @@ class TwitterAPI:
         return False
 
     def _handle_account_lock_error(self, identifier: str, method_name: str, retry_func):
-        """アカウントロックエラーをハンドリングし、クッキーを再読み込みして再試行"""
+        """Recover from an account lock: wait for a cookie refresh, back off, then retry.
+
+        Each failed attempt recurses. NOTE: _auth_retry_count is reset to 0 before retry_func() runs,
+        so nested lock handling is not bounded by _max_auth_retries.
+
+        Args:
+            identifier: Description of the failed operation, used in log output.
+            method_name: Name of the failed method; only passed through on recursion.
+            retry_func: Zero-argument callable that repeats the failed operation.
+
+        Returns:
+            The result of retry_func.
+
+        Raises:
+            SystemExit: When the count reaches _max_auth_retries (only after nested attempts also fail).
+        """
         if self._auth_retry_count < self._max_auth_retries:
             self._auth_retry_count += 1
             print(f"\n🔒 アカウントロック検出 ({identifier}): Cookie再読み込み＋リトライ {self._auth_retry_count}/{self._max_auth_retries}")
             
-            # ログインユーザーIDのキャッシュをクリア
+            # Force the login user ID (relationship cache key) to be re-derived
             self._login_user_id = None
             
-            # リトライ間隔の計算（アカウントロック用により長い待機）
-            base_delay = min(5 ** (self._auth_retry_count - 1), 300)  # より長い待機（最大5分）
-            jitter = random.uniform(0.8, 1.2)  # 小さなランダム要素
+            # Backoff 5^(n-1) s, capped at 5 minutes, with jitter; longer than the 401 backoff
+            base_delay = min(5 ** (self._auth_retry_count - 1), 300)  # cap: 5 minutes
+            jitter = random.uniform(0.8, 1.2)  # +/-20% jitter
             retry_delay = base_delay * jitter
             
             print(f"📊 アカウントロック用リトライ戦略: 基本待機時間={base_delay}秒, 調整後={retry_delay:.1f}秒")
             
-            # クッキーファイルの更新を待機
+            # Poll the cookie file's mtime for an external refresh
             try:
-                # 現在のクッキーファイルのタイムスタンプを取得
                 cookie_path = Path(self.cookie_manager.cookies_file)
                 if cookie_path.exists():
                     initial_mtime = cookie_path.stat().st_mtime
                     print(f"🕒 Cookie更新待機中... (現在: {datetime.fromtimestamp(initial_mtime).strftime('%H:%M:%S')})")
                     
-                    # より長い時間をかけてCookie更新を待機
-                    max_wait_time = max(60, retry_delay)  # 最低60秒
+                    max_wait_time = max(60, retry_delay)  # at least 60 s
                     start_time = time.time()
                     
                     while time.time() - start_time < max_wait_time:
-                        time.sleep(5)  # 5秒間隔でチェック
+                        time.sleep(5)  # poll every 5 s
                         if cookie_path.exists():
                             current_mtime = cookie_path.stat().st_mtime
                             if current_mtime > initial_mtime:
@@ -1346,25 +1314,21 @@ class TwitterAPI:
                     else:
                         print(f"⚠️ {max_wait_time}秒待機しましたが、Cookie更新を検出できませんでした")
                 
-                # 追加の待機時間
                 print(f"⏸️ アカウントロック解除待機: {retry_delay:.1f}秒")
                 time.sleep(retry_delay)
                 
-                # 認証リトライカウンターをリセット（新しいCookieでリトライ）
+                # Reset the counter for the nested retry; restored below if it fails
                 temp_auth_retry = self._auth_retry_count
                 self._auth_retry_count = 0
                 
                 try:
-                    # リトライ実行
                     print(f"🔄 アカウントロック回復試行中...")
                     result = retry_func()
-                    # 成功した場合はカウンターをリセット
                     self._auth_retry_count = 0
                     print(f"✅ アカウントロック回復成功！({temp_auth_retry}回目で成功)")
                     return result
                 except SystemExit as e:
                     if "Account locked" in str(e):
-                        # まだアカウントロック状態の場合
                         self._auth_retry_count = temp_auth_retry
                         if self._auth_retry_count < self._max_auth_retries:
                             print(f"🔒 アカウントロック継続中、再リトライします...")
@@ -1375,7 +1339,6 @@ class TwitterAPI:
                     else:
                         raise
                 except Exception as e:
-                    # その他のエラーの場合、カウンターを戻して再試行
                     self._auth_retry_count = temp_auth_retry
                     if self._auth_retry_count < self._max_auth_retries:
                         return self._handle_account_lock_error(identifier, method_name, retry_func)
@@ -1390,37 +1353,40 @@ class TwitterAPI:
                 else:
                     raise
                     
-        # 再試行回数を超えた場合
         print(f"\n🚫 アカウントロック最終判定 ({identifier}): {self._max_auth_retries}回のリトライ後もロック状態")
         print("📋 考えられる原因:")
         print("  1. 長期的なアカウント制限")
         print("  2. セキュリティ検証が必要")
         print("  3. 新しいCookieファイルが必要")
         print("🔧 対処方法: ブラウザでTwitterにログインし、新しいCookieファイルを取得してください")
-        self._auth_retry_count = 0  # カウンターをリセット
+        self._auth_retry_count = 0
         raise SystemExit("Account locked - Cookie reload failed")
 
     def _track_error_and_check_cookie_reload(self, identifier: str, error_type: str = "general") -> bool:
-        """エラーを追跡し、Cookie再読み込みが必要かチェック"""
+        """Count an error and return True once the consecutive-error or in-window threshold is reached.
+
+        Args:
+            identifier: Description of the failed operation, used in log output.
+            error_type: Currently unused.
+
+        Returns:
+            True if cookies should be reloaded.
+        """
         current_time = time.time()
         
-        # 連続エラー数をカウント
         self._consecutive_errors += 1
         
-        # エラー監視窓の管理
+        # Fixed (non-sliding) window that starts at the first error
         if self._error_window_start is None:
             self._error_window_start = current_time
             self._error_count_in_window = 1
         else:
-            # 監視窓内のエラーかチェック
             if current_time - self._error_window_start <= self._error_window_duration:
                 self._error_count_in_window += 1
             else:
-                # 新しい監視窓を開始
                 self._error_window_start = current_time
                 self._error_count_in_window = 1
         
-        # Cookie再読み込み条件のチェック
         needs_cookie_reload = False
         reason = ""
         
@@ -1439,30 +1405,41 @@ class TwitterAPI:
         return False
 
     def _handle_frequent_errors(self, identifier: str, method_name: str, retry_func):
-        """エラー多発時のCookie再読み込み処理"""
+        """Reset the error counters, wait up to 30 s for a cookie refresh, then retry once.
+
+        Args:
+            identifier: Description of the failed operation, used in log output.
+            method_name: Name of the failed method (unused).
+            retry_func: Zero-argument callable that repeats the failed operation.
+
+        Returns:
+            The result of retry_func.
+
+        Raises:
+            Exception: Re-raised when the retry or the wait fails.
+        """
         print(f"\n🔄 エラー多発によるCookie再読み込み実行 ({identifier})")
         
-        # エラーカウンターをリセット
         self._consecutive_errors = 0
         self._error_window_start = None
         self._error_count_in_window = 0
         
-        # ログインユーザーIDのキャッシュをクリア
+        # Force the login user ID (relationship cache key) to be re-derived
         self._login_user_id = None
         
-        # Cookie再読み込み待機
+        # Wait briefly for the cookie file to be refreshed
         try:
             cookie_path = Path(self.cookie_manager.cookies_file)
             if cookie_path.exists():
                 initial_mtime = cookie_path.stat().st_mtime
                 print(f"🕒 エラー多発対応のCookie更新待機中... (現在: {datetime.fromtimestamp(initial_mtime).strftime('%H:%M:%S')})")
                 
-                # 短い時間でCookie更新を待機（エラー多発時は緊急対応）
-                max_wait_time = 30  # 30秒で短縮
+                # Shorter wait than 401 recovery
+                max_wait_time = 30  # seconds
                 start_time = time.time()
                 
                 while time.time() - start_time < max_wait_time:
-                    time.sleep(2)  # 2秒間隔でチェック
+                    time.sleep(2)  # poll every 2 s
                     if cookie_path.exists():
                         current_mtime = cookie_path.stat().st_mtime
                         if current_mtime > initial_mtime:
@@ -1472,12 +1449,10 @@ class TwitterAPI:
                 else:
                     print(f"⚠️ {max_wait_time}秒待機しましたが、Cookie更新を検出できませんでした")
             
-            # 短い待機時間でリトライ
-            retry_delay = 10  # エラー多発時は短縮
+            retry_delay = 10  # seconds
             print(f"⏸️ エラー多発対応待機: {retry_delay}秒")
             time.sleep(retry_delay)
             
-            # リトライ実行
             print(f"🔄 エラー多発回復試行中...")
             result = retry_func()
             print(f"✅ エラー多発回復成功！")
@@ -1485,11 +1460,10 @@ class TwitterAPI:
             
         except Exception as e:
             print(f"❌ エラー多発回復エラー ({identifier}): {e}")
-            # エラー多発回復に失敗した場合は通常のエラーとして扱う
             raise
 
     def _reset_error_counters_on_success(self):
-        """成功時にエラーカウンターをリセット（403エラー統計含む）"""
+        """Reset the consecutive-error and 403 counters after a success (the time window keeps running)."""
         reset_messages = []
         
         if self._consecutive_errors > 0:
@@ -1498,9 +1472,9 @@ class TwitterAPI:
         
         if self._error_count_in_window > 0:
             reset_messages.append(f"窓内: {self._error_count_in_window}")
-            # 監視窓は継続（時間ベースのため）
+            # The window is time-based, so it keeps running
         
-        # 403エラー統計のリセット（重要: 無限ループ防止）
+        # Reset 403 stats too so stale counts do not re-trigger the forced refresh
         if self._403_error_stats["total_403_errors"] > 0:
             reset_messages.append(f"403エラー: {self._403_error_stats['total_403_errors']}")
             self._403_error_stats["total_403_errors"] = 0
@@ -1511,42 +1485,47 @@ class TwitterAPI:
 
 
     def _get_login_user_id(self) -> str:
-        """ログインユーザーIDを取得（キャッシュ付き）"""
+        """Return the cached login user ID.
+
+        Derived from the twid cookie, or from a hash of personalization_id/guest_id, or 'default_user' on failure.
+        """
         if self._login_user_id:
             return self._login_user_id
         
         try:
             cookies = self.cookie_manager.load_cookies()
             
-            # Method 1: twid cookieから取得（最も信頼性が高い）
+            # Preferred: numeric user ID from the twid cookie
             if 'twid' in cookies:
-                # twid=u%3D1234567890 形式から数値部分を抽出
+                # twid looks like u%3D1234567890
                 twid = cookies['twid']
                 if 'u%3D' in twid:
                     self._login_user_id = twid.split('u%3D')[1].split('%')[0]
                     return self._login_user_id
             
-            # Method 2: personalization_idまたはguest_idを使用
+            # Fallback: use personalization_id or guest_id
             pid = cookies.get('personalization_id', cookies.get('guest_id', 'unknown'))
-            # ハッシュ化してユニークなIDとして使用
             import hashlib
             self._login_user_id = hashlib.md5(pid.encode()).hexdigest()[:12]
             
         except Exception:
-            # フォールバック: 固定ID
             self._login_user_id = "default_user"
         
         return self._login_user_id
 
 
     def _get_profile_from_cache(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """基本プロフィール情報キャッシュからデータを取得（共有）"""
+        """Load the shared profile cache entry; expired or unreadable files are deleted.
+
+        Returns:
+            Cached profile dict, or None on a miss.
+        """
         safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "._-")
         cache_file = self.profiles_cache_dir / f"{safe_user_id}.json"
         
         if cache_file.exists():
             try:
-                # ファイルの更新時刻を確認
+                # Entries expire cache_ttl seconds after the file's mtime
                 file_mtime = cache_file.stat().st_mtime
                 current_time = time.time()
                 
@@ -1565,12 +1544,12 @@ class TwitterAPI:
         return None
 
     def _save_profile_to_cache(self, user_id: str, profile_data: Dict[str, Any]) -> None:
-        """基本プロフィール情報キャッシュに保存（共有）"""
+        """Save the shared profile cache entry (profile fields only, no relationship flags)."""
         safe_user_id = "".join(c for c in user_id if c.isalnum() or c in "._-")
         cache_file = self.profiles_cache_dir / f"{safe_user_id}.json"
         
         try:
-            # 基本情報のみ抽出（関係情報は除外）
+            # Basic fields only; relationship flags are stored separately
             profile_only = {
                 "id": profile_data.get("id"),
                 "screen_name": profile_data.get("screen_name"),
@@ -1588,16 +1567,17 @@ class TwitterAPI:
 
 
     def _combine_profile_and_relationship(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """プロフィール情報と関係情報を結合"""
-        # 基本プロフィール情報を取得
+        """Merge the cached profile with the per-login relationship flags.
+
+        Returns:
+            Combined dict (missing relationship flags default to False), or None when no profile is cached.
+        """
         profile_data = self._get_profile_from_cache(user_id)
         if not profile_data:
             return None
         
-        # 関係情報を取得
         relationship_data = self._get_relationship_from_cache(user_id)
         
-        # 結合
         combined_data = profile_data.copy()
         if relationship_data:
             combined_data.update({
@@ -1607,7 +1587,7 @@ class TwitterAPI:
                 "blocked_by": relationship_data.get("blocked_by", False),
             })
         else:
-            # 関係情報がない場合のデフォルト値
+            # No relationship cached: assume none
             combined_data.update({
                 "following": False,
                 "followed_by": False,
@@ -1618,19 +1598,18 @@ class TwitterAPI:
         return combined_data
     
     def _check_long_term_403_patterns(self) -> List[str]:
-        """長期稼働時の403エラーパターンを早期検出"""
+        """Return warning messages based on the runtime and the 403 statistics."""
         warnings = []
         current_time = time.time()
         
-        # セッション開始時刻の推定（初回リクエスト時刻）
         if hasattr(self, '_session_start_time'):
             runtime_hours = (current_time - self._session_start_time) / 3600
         else:
-            # 初回実行時はセッション開始時刻を設定
+            # Defensive: normally already set in __init__
             self._session_start_time = current_time
             runtime_hours = 0
         
-        # 2-3時間の重要遷移期間での警告
+        # Warnings for the 2.0-3.5 h window (heuristic thresholds)
         if 2.0 <= runtime_hours <= 3.5:
             total_403s = self._403_error_stats["total_403_errors"]
             recent_auth_errors = self._403_error_stats["classified_errors"].get("auth_required", 0)
@@ -1645,9 +1624,8 @@ class TwitterAPI:
             if total_403s > 20:
                 warnings.append(f"⚠️ 403エラー集中発生 (2-3時間遷移期): 総数{total_403s}回 - システム劣化進行中")
         
-        # 3時間以上の長期稼働での劣化パターン
+        # Beyond 3.5 h (the 2.0-3.5 h range is handled above)
         elif runtime_hours > 3.0:
-            # IP評価低下の検出
             ip_blocked = self._403_error_stats["classified_errors"].get("ip_blocked", 0)
             account_restricted = self._403_error_stats["classified_errors"].get("account_restricted", 0)
             
@@ -1657,14 +1635,14 @@ class TwitterAPI:
             if account_restricted > 2:
                 warnings.append(f"🔒 アカウント制限増加 (長期稼働{runtime_hours:.1f}h): 制限{account_restricted}回 - アカウント健全性低下")
             
-            # 長期稼働成功の場合のポジティブメッセージ
+            # Positive note when few 403s occurred
             if self._403_error_stats["total_403_errors"] < 10:
                 warnings.append(f"✅ 長期稼働安定継続 ({runtime_hours:.1f}h): 403エラー{self._403_error_stats['total_403_errors']}回のみ - 優秀な安定性")
         
         return warnings
     
     def get_403_error_report(self) -> Dict[str, Any]:
-        """詳細な403エラー統計レポートを取得"""
+        """Return the 403 statistics, RetryManager statistics and header effectiveness."""
         retry_stats = self.retry_manager.get_error_statistics()
         
         return {
@@ -1677,20 +1655,15 @@ class TwitterAPI:
         }
     
     def get_comprehensive_error_analysis(self) -> Dict[str, Any]:
-        """包括的なエラー分析レポートを生成"""
-        # 403エラー統計
+        """Build a combined report: 403 stats, header effectiveness, long-term warnings, error_analytics data and recommendations."""
         error_403_report = self.get_403_error_report()
         
-        # ヘッダー効果統計
         header_report = self.header_enhancer.get_effectiveness_report() if self.header_enhancer else {}
         
-        # 長期稼働時の早期警告チェック
         long_term_warnings = self._check_long_term_403_patterns()
         
-        # 推奨事項の生成
         recommendations = []
         
-        # 長期稼働警告の追加
         if long_term_warnings:
             recommendations.extend(long_term_warnings)
         
@@ -1707,7 +1680,6 @@ class TwitterAPI:
         if retry_stats.get("success_rate", 1.0) < 0.5:
             recommendations.append("リトライ成功率が低いため、バックオフ戦略の調整が必要")
         
-        # HTTPエラー分析システムからの追加データ
         error_analytics_data = {}
         if self.error_analytics:
             try:
@@ -1734,29 +1706,31 @@ class TwitterAPI:
         }
     
     def _check_early_warning_conditions(self, error_classification: str = None) -> bool:
-        """エラーの早期警告条件をチェック"""
+        """Issue an early warning if a trigger condition holds and the cooldown has passed.
+
+        Args:
+            error_classification: 403 classification of the latest error, if any.
+
+        Returns:
+            True if a warning was issued.
+        """
         current_time = time.time()
         
-        # クールダウン中の場合は警告しない
         if (current_time - self.early_warning_system["last_warning_time"]) < self.early_warning_system["warning_cooldown"]:
             return False
         
-        # エラー統計を取得
         retry_stats = self.retry_manager.get_error_statistics()
         
-        # 条件1: エラースパイクの検出
         if retry_stats["total_attempts"] >= self.early_warning_system["error_spike_threshold"]:
             print(f"\n⚠️ 早期警告: エラースパイク検出 - 5分間で{retry_stats['total_attempts']}回のエラー")
             self._issue_early_warning("ERROR_SPIKE", retry_stats)
             return True
         
-        # 条件2: エラー率の異常高騰
         if retry_stats["success_rate"] < (1 - self.early_warning_system["error_rate_threshold"]):
             print(f"\n⚠️ 早期警告: 高エラー率検出 - 成功率: {retry_stats['success_rate']:.1%}")
             self._issue_early_warning("HIGH_ERROR_RATE", retry_stats)
             return True
         
-        # 条件3: 重大エラータイプの検出
         if error_classification in self.early_warning_system["critical_error_types"]:
             print(f"\n🚨 重大警告: 重編エラータイプ検出 - {error_classification}")
             self._issue_early_warning("CRITICAL_ERROR_TYPE", {"error_type": error_classification})
@@ -1765,7 +1739,12 @@ class TwitterAPI:
         return False
     
     def _issue_early_warning(self, warning_type: str, details: Dict[str, Any]):
-        """早期警告を発行して対応策を提案"""
+        """Print a warning with recommended actions and start the cooldown.
+
+        Args:
+            warning_type: ERROR_SPIKE, HIGH_ERROR_RATE or CRITICAL_ERROR_TYPE.
+            details: Statistics (or {'error_type': ...}) for that warning type.
+        """
         current_time = time.time()
         self.early_warning_system["warning_issued"] = True
         self.early_warning_system["last_warning_time"] = current_time
@@ -1809,7 +1788,7 @@ class TwitterAPI:
         print("========================\n")
 
     def get_cache_stats(self) -> Dict[str, Any]:
-        """キャッシュの統計情報を取得"""
+        """Count total, valid and expired entries in each cache directory (valid means younger than cache_ttl)."""
         stats = {
             "lookups_cache": {"total": 0, "valid": 0, "expired": 0},
             "profiles_cache": {"total": 0, "valid": 0, "expired": 0},
@@ -1818,7 +1797,6 @@ class TwitterAPI:
         
         current_time = time.time()
         
-        # 各キャッシュディレクトリをチェック
         cache_dirs = [
             ("lookups_cache", self.lookups_cache_dir),
             ("profiles_cache", self.profiles_cache_dir),
@@ -1827,7 +1805,7 @@ class TwitterAPI:
         
         for cache_name, cache_dir in cache_dirs:
             if cache_dir.exists():
-                # relationships_cacheの場合は再帰的に検索
+                # relationships are nested one level deep (one directory per login user)
                 if cache_name == "relationships_cache":
                     for user_dir in cache_dir.iterdir():
                         if user_dir.is_dir():
@@ -1847,7 +1825,6 @@ class TwitterAPI:
                         else:
                             stats[cache_name]["expired"] += 1
         
-        # 合計を計算
         total_entries = sum(s["total"] for s in stats.values())
         valid_entries = sum(s["valid"] for s in stats.values())
         expired_entries = sum(s["expired"] for s in stats.values())
@@ -1866,7 +1843,11 @@ class TwitterAPI:
         }
 
     def _get_lookup_from_cache(self, screen_name: str) -> Optional[Dict[str, Any]]:
-        """lookupキャッシュから取得（screen_name -> user_id変換用）"""
+        """Load the cached lookup record ({screen_name, user_id, cached_at}); expired or unreadable files are deleted.
+
+        Returns:
+            The record dict, or None on a miss.
+        """
         safe_screen_name = "".join(c for c in screen_name if c.isalnum() or c in "._-")
         cache_file = self.lookups_cache_dir / f"{safe_screen_name}.json"
         
@@ -1890,7 +1871,7 @@ class TwitterAPI:
         return None
 
     def _save_lookup_to_cache(self, screen_name: str, user_id: str) -> None:
-        """lookupキャッシュに保存（screen_name -> user_id変換用）"""
+        """Save a screen_name -> user_id lookup record."""
         safe_screen_name = "".join(c for c in screen_name if c.isalnum() or c in "._-")
         cache_file = self.lookups_cache_dir / f"{safe_screen_name}.json"
         
@@ -1910,7 +1891,11 @@ class TwitterAPI:
             print(f"lookupキャッシュ保存エラー ({screen_name}): {e}")
 
     def _get_relationship_from_cache(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """関係情報キャッシュから取得（ログインユーザー別）"""
+        """Load the relationship cache entry of the current login user; expired or unreadable files are deleted.
+
+        Returns:
+            Cached dict, or None on a miss.
+        """
         login_user_id = self._get_login_user_id()
         user_cache_dir = self.relationships_cache_dir / login_user_id
         
@@ -1937,7 +1922,7 @@ class TwitterAPI:
         return None
 
     def _save_relationship_to_cache(self, user_id: str, user_data: Dict[str, Any]) -> None:
-        """関係情報キャッシュに保存（ログインユーザー別）"""
+        """Save the full user dict to the current login user's relationship cache."""
         login_user_id = self._get_login_user_id()
         user_cache_dir = self.relationships_cache_dir / login_user_id
         user_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1953,39 +1938,52 @@ class TwitterAPI:
             print(f"関係情報キャッシュ保存エラー ({user_id}): {e}")
 
     def _handle_auth_error(self, identifier: str, method_name: str, retry_func):
-        """認証エラーをハンドリングし、クッキーを再読み込みして再試行（最大10回）"""
+        """Recover from a 401: wait for a cookie file refresh, clear the cookie cache, back off, then retry.
+
+        The first retry waits up to 1 hour for the cookie file's mtime to change, later ones up to 30 s.
+        Retries up to _max_auth_retries times by recursing on failure.
+
+        Args:
+            identifier: Description of the failed operation, used in log output.
+            method_name: Name of the failed method; only passed through on recursion.
+            retry_func: Zero-argument callable that repeats the failed operation.
+
+        Returns:
+            The result of retry_func.
+
+        Raises:
+            SystemExit: When the retries are exhausted.
+        """
         if self._auth_retry_count < self._max_auth_retries:
             self._auth_retry_count += 1
             print(f"\n🔑 認証エラー検出 ({identifier}): Cookie再読み込み＋リトライ {self._auth_retry_count}/{self._max_auth_retries}")
             
-            # ログインユーザーIDのキャッシュをクリア
+            # Force the login user ID (relationship cache key) to be re-derived
             self._login_user_id = None
             
-            # リトライ間隔の計算（指数バックオフ + ランダム）
-            base_delay = min(2 ** (self._auth_retry_count - 1), 60)  # 最大60秒
-            jitter = random.uniform(0.5, 1.5)  # ランダム要素
+            # Exponential backoff 2^(n-1) s, capped at 60 s, with jitter
+            base_delay = min(2 ** (self._auth_retry_count - 1), 60)  # cap: 60 s
+            jitter = random.uniform(0.5, 1.5)  # +/-50% jitter
             retry_delay = base_delay * jitter
             
             print(f"📊 リトライ戦略: 基本待機時間={base_delay}秒, 調整後={retry_delay:.1f}秒")
             
-            # クッキーファイルの更新を待機
+            # Poll the cookie file's mtime for an external refresh
             try:
-                # 現在のクッキーファイルのタイムスタンプを取得
                 cookie_path = Path(self.cookie_manager.cookies_file)
                 if cookie_path.exists():
                     original_mtime = cookie_path.stat().st_mtime
                     print(f"📁 現在のCookieファイル更新時刻: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(original_mtime))}")
                     
-                    # タイムスタンプ更新を待機
                     if self._auth_retry_count == 1:
-                        # 初回のみ長期間待機（Cookie更新を期待）
+                        # First retry: wait up to 1 hour for a refreshed cookie file
                         print("⏰ Cookieファイルのタイムスタンプ更新を待機中...")
-                        timeout = 3600  # 1時間
+                        timeout = 3600  # seconds
                         check_interval = 1.0
                     else:
-                        # 2回目以降は短期間の確認のみ
+                        # Later retries: short check only
                         print(f"⏰ Cookieファイル確認中（{self._auth_retry_count}回目のリトライ）...")
-                        timeout = 30  # 30秒
+                        timeout = 30  # seconds
                         check_interval = 0.5
                     
                     start_time = time.time()
@@ -1994,13 +1992,12 @@ class TwitterAPI:
                     while time.time() - start_time < timeout:
                         current_mtime = cookie_path.stat().st_mtime
                         if current_mtime > original_mtime:
-                            # ファイルが更新された
                             print(f"✅ Cookieファイルが更新されました: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current_mtime))}")
                             cookie_updated = True
-                            time.sleep(1)  # ファイル書き込み完了を待つため少し待機
+                            time.sleep(1)  # let the write finish
                             break
                         
-                        # 進捗表示（10秒ごと、またはタイムアウトが短い場合は5秒ごと）
+                        # Progress output every 10 s (5 s when the timeout is 60 s or less)
                         elapsed = int(time.time() - start_time)
                         progress_interval = 5 if timeout <= 60 else 10
                         if elapsed > 0 and elapsed % progress_interval == 0:
@@ -2015,29 +2012,24 @@ class TwitterAPI:
                     elif not cookie_updated:
                         print(f"📋 Cookie更新なし（{timeout}秒経過）- 既存Cookieでリトライ継続")
                 
-                # クッキーキャッシュをクリア
                 self.cookie_manager.clear_cache()
                 print(f"🧹 Cookieキャッシュをクリアしました")
                 
-                # 適応的待機時間
                 print(f"⏱️ リトライ前の待機: {retry_delay:.1f}秒")
                 time.sleep(retry_delay)
                 
-                # 再試行実行
                 print(f"🔄 リトライ実行中... ({self._auth_retry_count}/{self._max_auth_retries})")
                 result = retry_func()
                 
-                # 成功したらカウンターをリセット
                 print(f"✅ リトライ成功！認証エラーが解決されました ({self._auth_retry_count}回目で成功)")
                 self._auth_retry_count = 0
                 return result
                 
             except SystemExit:
-                # 再試行でも認証エラーの場合、次のリトライに進む
+                # retry_func raised SystemExit (authentication still failing)
                 print(f"❌ リトライ {self._auth_retry_count}回目も認証エラー")
                 if self._auth_retry_count < self._max_auth_retries:
                     print(f"📈 次のリトライ（{self._auth_retry_count + 1}/{self._max_auth_retries}）を準備中...")
-                    # 再帰的に再試行
                     return self._handle_auth_error(identifier, method_name, retry_func)
                 else:
                     print(f"🚫 最大リトライ回数（{self._max_auth_retries}回）に達しました")
@@ -2051,7 +2043,6 @@ class TwitterAPI:
                 else:
                     raise
                 
-        # 再試行回数を超えた場合
         print(f"\n🚫 認証エラー最終判定 ({identifier}): {self._max_auth_retries}回のリトライ後も認証失敗")
         print("📋 考えられる原因:")
         print("  1. Cookieファイルが完全に無効")
@@ -2059,5 +2050,5 @@ class TwitterAPI:
         print("  3. Twitter API仕様変更")
         print("  4. ネットワーク接続問題")
         print("🔧 対処方法: 新しいCookieファイルの取得が必要です")
-        self._auth_retry_count = 0  # カウンターをリセット
+        self._auth_retry_count = 0
         raise SystemExit("Authentication failed - Cookie is invalid")
