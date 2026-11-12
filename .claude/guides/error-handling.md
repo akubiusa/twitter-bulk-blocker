@@ -53,10 +53,6 @@ Matching is by substring, so the first matching rule wins even when a later rule
 `is_permanent_failure()` and `get_permanent_failures_batch()` apply `RetryManager.should_retry` to a user's failed row to decide whether to skip the user.
 `BulkBlockManager` calls the batch version once per batch before any API lookup.
 
-> Known issue: both functions negate the tuple returned by `should_retry` (see above), so they never report a permanent failure.
-> The two `if self.retry_manager.should_retry(...)` checks in `manager.py` (`_check_user_unavailable`, `_execute_block`) have the opposite problem and are always true.
-> Fix by indexing `should_retry(...)[0]`.
-
 ## HTTP-level recovery in `TwitterAPI`
 
 | Condition | Behavior |

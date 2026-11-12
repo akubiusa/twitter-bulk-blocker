@@ -58,9 +58,7 @@ To fix: copy the current `features` query parameter from a real `UserByScreenNam
 
 - A lookup that reports the user as missing, suspended or deactivated is recorded in `block_history` as `status='failed'` with `user_status` set (`not_found`, `suspended`, `deactivated`).
 - `--stats` shows the counts (`suspended`, and `unavailable` which also covers `not_found` / `deactivated`).
-- Intended behavior: `RetryManager.should_retry` treats these as permanent and the error message gets a `(permanent)` suffix.
-  Actual behavior today: `_check_user_unavailable` / `_execute_block` in `manager.py` test the `should_retry` tuple as a boolean, so every such user is recorded as retryable, without the suffix (see the known-issue note in `guides/error-handling.md`).
-  Expect them to show up again in `--retry` candidates until that is fixed.
+- `RetryManager.should_retry` treats these as permanent, the stored error message gets a `(permanent)` suffix, and later runs skip them without an API call.
 
 ## SQLite
 

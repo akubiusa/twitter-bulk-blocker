@@ -592,10 +592,7 @@ class DatabaseManager:
         return affected_rows
 
     def is_permanent_failure(self, identifier: str, user_format: str = "screen_name") -> bool:
-        """Intended: return True if the user has a failed row that RetryManager says should not be retried.
-
-        NOTE: currently always False, because RetryManager.should_retry returns a tuple (always truthy), so `not should_retry(...)` is never True.
-        """
+        """Return True if the user has a failed row that RetryManager says should not be retried."""
         from .retry import RetryManager
         
         with sqlite3.connect(self.db_file) as conn:
@@ -633,7 +630,7 @@ class DatabaseManager:
             response_code or 0,
             error_message or "",
             retry_count or 0
-        )
+        )[0]
 
     def get_permanent_failure_info(self, identifier: str, user_format: str = "screen_name") -> Optional[Dict[str, Any]]:
         """Return details of the user's failed row, or None if there is none.
@@ -687,10 +684,8 @@ class DatabaseManager:
     def get_permanent_failures_batch(self, identifiers: List[str], user_format: str = "screen_name") -> Dict[str, Dict[str, Any]]:
         """Batch version of is_permanent_failure plus get_permanent_failure_info.
 
-        NOTE: currently always returns {} (same cause as is_permanent_failure: `not should_retry(...)` on a tuple is always False).
-
         Returns:
-            Intended: dict keyed by user_id or screen_name (per user_format) of failed users that
+            Dict keyed by user_id or screen_name (per user_format) of failed users that
             RetryManager says should not be retried.
         """
         from .retry import RetryManager
@@ -738,7 +733,7 @@ class DatabaseManager:
                 response_code or 0,
                 error_message or "",
                 retry_count or 0
-            )
+            )[0]
             
             if is_permanent:
                 results[key] = {
