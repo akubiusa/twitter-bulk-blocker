@@ -47,7 +47,7 @@ Matching is by substring, so the first matching rule wins even when a later rule
 
 ## Failed-user retries (`--retry`)
 
-`DatabaseManager.get_retry_candidates()` returns `block_history` rows with `status = 'failed'`, `retry_count < 10`, a transient-looking failure (`user_status = 'unavailable'`, response code 429/5xx or NULL, or a retryable message), and a non-NULL `last_retry_at` that is at least `30 * 2**retry_count` seconds old.
+`DatabaseManager.get_retry_candidates()` returns `block_history` rows with `status = 'failed'`, `retry_count < 10`, a transient-looking failure (`user_status = 'unavailable'`, response code 429/5xx or NULL, or a retryable message), and either a NULL `last_retry_at` (set by `--reset-retry` / `--reset-failed`; no backoff pending) or a non-NULL `last_retry_at` that is at least `30 * 2**retry_count` seconds old.
 `--reset-retry`, `--clear-errors` and `--reset-failed` reset the retry counters, error messages, or both plus the status of failed users.
 
 `is_permanent_failure()` and `get_permanent_failures_batch()` apply `RetryManager.should_retry` to a user's failed row to decide whether to skip the user.

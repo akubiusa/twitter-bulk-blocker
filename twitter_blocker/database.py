@@ -237,7 +237,8 @@ class DatabaseManager:
         """Return failed users that are retryable and past their backoff delay.
 
         Only rows below the retry limit with a transient-looking failure qualify,
-        oldest last_retry_at first. Rows with NULL last_retry_at are never returned.
+        oldest last_retry_at first. Rows with NULL last_retry_at (set by reset_retry_counts /
+        reset_failed_users) have no backoff pending and are always returned.
 
         Returns:
             Dicts with screen_name, user_id, display_name, retry_count, user_status, last_error.
@@ -285,18 +286,19 @@ class DatabaseManager:
             if last_retry_str:
                 last_retry = datetime.fromisoformat(last_retry_str)
                 required_delay = self._get_retry_delay(retry_count)
+                if (current_time - last_retry).total_seconds() < required_delay:
+                    continue
 
-                if (current_time - last_retry).total_seconds() >= required_delay:
-                    candidates.append(
-                        {
-                            "screen_name": screen_name,
-                            "user_id": user_id,
-                            "display_name": display_name,
-                            "retry_count": retry_count,
-                            "user_status": user_status,
-                            "last_error": error_message,
-                        }
-                    )
+            candidates.append(
+                {
+                    "screen_name": screen_name,
+                    "user_id": user_id,
+                    "display_name": display_name,
+                    "retry_count": retry_count,
+                    "user_status": user_status,
+                    "last_error": error_message,
+                }
+            )
 
         conn.close()
         return candidates
