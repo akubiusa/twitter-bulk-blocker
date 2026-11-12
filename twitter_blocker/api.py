@@ -259,12 +259,11 @@ class TwitterAPI:
     def get_user_info(self, screen_name: str) -> Optional[Dict[str, Any]]:
         """Look up a user by screen_name via UserByScreenName.
 
-        NOTE: the lookup-cache shortcut at the top never hits because _get_lookup_from_cache returns a dict, not a user_id.
-
         Returns:
             User info dict, or None on failure.
         """
-        user_id = self._get_lookup_from_cache(screen_name)
+        lookup_data = self._get_lookup_from_cache(screen_name)
+        user_id = lookup_data.get('user_id') if lookup_data else None
         if user_id:
             cached_result = self._combine_profile_and_relationship(user_id)
             if cached_result:
