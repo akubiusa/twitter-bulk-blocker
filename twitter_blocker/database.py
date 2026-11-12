@@ -478,6 +478,35 @@ class DatabaseManager:
         
         return affected_rows
 
+    def delete_failed_rows_without_user_id(
+        self, screen_name: str, below_retry_count: Optional[int] = None
+    ) -> int:
+        """Delete failed rows of screen_name that have no user_id; return the number of rows deleted.
+
+        Such rows are never replaced by a later record_block_result, because UNIQUE(user_id) does not match NULL.
+        Rows with a user_id and rows that are not failed are never touched.
+
+        Args:
+            below_retry_count: When set, only rows with a smaller retry_count are deleted, so a freshly recorded NULL-user_id row survives.
+        """
+        conn = sqlite3.connect(self.db_file)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                DELETE FROM block_history
+                WHERE screen_name = ? AND user_id IS NULL AND status = 'failed'
+                AND (? IS NULL OR retry_count < ?)
+                """,
+                (str(screen_name), below_retry_count, below_retry_count),
+            )
+            deleted_rows = cursor.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+
+        return deleted_rows
+
     def clear_error_messages(self, identifiers: Optional[List[str]] = None, user_format: str = "screen_name") -> int:
         """Set error_message to NULL on failed rows.
 

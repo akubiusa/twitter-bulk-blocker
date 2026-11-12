@@ -531,7 +531,12 @@ class BulkBlockManager:
         total_count: int,
         stats: Dict[str, int],
     ) -> None:
-        """Retry one failed candidate (lookup only; see note below)."""
+        """Retry one failed candidate: look it up again, apply the normal safety checks, then block.
+
+        Rows recorded with the incremented retry_count replace the failed row. A failed row
+        without a user_id is deleted once the lookup supplied one, because the new row is
+        keyed by that user_id and would not replace it.
+        """
         screen_name = candidate["screen_name"]
         user_id = candidate["user_id"]
         retry_count = candidate["retry_count"] + 1
@@ -566,7 +571,31 @@ class BulkBlockManager:
                 )
                 return
 
-            # NOTE: the block is not re-executed here; only the lookup is repeated and the user is counted as processed
+            resolved_name = user_info.get("screen_name") or screen_name
+
+            skipped = self._check_user_unavailable(
+                user_info, resolved_name, stats, retry_count
+            )
+            skipped = skipped or self._check_follow_relationship(
+                user_info, resolved_name, stats
+            )
+            skipped = skipped or self._check_already_blocking(
+                user_info, resolved_name, stats
+            )
+            if not skipped:
+                self._execute_block(user_info, resolved_name, stats, retry_count)
+
+            if user_id is None:
+                if user_info.get("id") is not None:
+                    self.database.delete_failed_rows_without_user_id(screen_name)
+                else:
+                    # The recorded row has no user_id either, so keep it and drop only the older ones.
+                    self.database.delete_failed_rows_without_user_id(
+                        screen_name, below_retry_count=retry_count
+                    )
+
+            if skipped:
+                return
 
             stats["processed"] += 1
             time.sleep(2.0)
@@ -591,9 +620,17 @@ class BulkBlockManager:
             )
 
     def _check_user_unavailable(
-        self, user_info: Dict[str, Any], screen_name: str, stats: Dict[str, int]
+        self,
+        user_info: Dict[str, Any],
+        screen_name: str,
+        stats: Dict[str, int],
+        retry_count: int = 0,
     ) -> bool:
-        """Record and skip users flagged unavailable; return True if skipped."""
+        """Record and skip users flagged unavailable; return True if skipped.
+
+        Args:
+            retry_count: Value stored in the recorded row. A retry must pass the incremented count, otherwise the retry limit never takes effect.
+        """
         if user_info.get("unavailable", False):
             user_status = user_info.get("user_status", "unavailable")
             print(f"  ⚠ スキップ: ユーザー利用不可 ({user_status})")
@@ -611,7 +648,7 @@ class BulkBlockManager:
                     0,
                     f"User {user_status}",
                     user_status,
-                    0,
+                    retry_count,
                 )
             else:
                 self.database.record_block_result(
@@ -622,7 +659,7 @@ class BulkBlockManager:
                     0,
                     f"User {user_status} (permanent)",
                     user_status,
-                    0,
+                    retry_count,
                 )
             return True
         return False
@@ -669,9 +706,17 @@ class BulkBlockManager:
         return False
 
     def _execute_block(
-        self, user_info: Dict[str, Any], screen_name: str, stats: Dict[str, int]
+        self,
+        user_info: Dict[str, Any],
+        screen_name: str,
+        stats: Dict[str, int],
+        retry_count: int = 0,
     ) -> None:
-        """Block the user via the API and record the outcome."""
+        """Block the user via the API and record the outcome.
+
+        Args:
+            retry_count: Value stored in the recorded row. A retry must pass the incremented count, otherwise the retry limit never takes effect.
+        """
         print(f"  → ブロック実行: {user_info['name']} (ID: {user_info['id']})")
         block_result = self.api.block_user(user_info["id"], screen_name)
 
@@ -686,6 +731,7 @@ class BulkBlockManager:
                 block_result.get("status_code", 200),
                 None,
                 user_info.get("user_status", "active"),
+                retry_count,
             )
         else:
             error_msg = (
@@ -716,7 +762,7 @@ class BulkBlockManager:
                     status_code,
                     error_message,
                     user_status,
-                    0,
+                    retry_count,
                 )
             else:
                 print("    → 永続的な失敗として記録")
@@ -729,7 +775,7 @@ class BulkBlockManager:
                     status_code,
                     f"{error_message} (permanent)",
                     user_status,
-                    0,
+                    retry_count,
                 )
 
     def _print_completion_stats(
