@@ -47,7 +47,7 @@ USER appuser
 VOLUME ["/app/data"]
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD python3 -c "import sys; sys.exit(0)"
+    CMD ["python3", "-c", "import os, sqlite3; sqlite3.connect('file:' + os.environ['TWITTER_BLOCK_DB'] + '?mode=ro', uri=True).execute('SELECT 1 FROM block_history LIMIT 1')"]
 
 ENTRYPOINT ["python3", "-m", "twitter_blocker"]
 CMD ["--help"]
