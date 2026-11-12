@@ -14,8 +14,7 @@ def get_git_version():
 
     Returns:
         The version string (e.g. "0.29.2", "0.29.2.dev3+dirty"), or None if git
-        is unavailable or, for a dirty checkout, there is no tag.
-        NOTE: a clean untagged checkout returns the bare commit hash.
+        is unavailable or there is no tag (git then yields a bare commit hash).
     """
     try:
         package_dir = Path(__file__).parent.parent  # parent of twitter_blocker/
@@ -33,14 +32,14 @@ def get_git_version():
         if version.startswith("v"):
             version = version[1:]
 
+        # no tag: "<hash>" or "<hash>-dirty" has no dot in its first segment, so treat as unknown
+        if "." not in version.split("-")[0]:
+            return None
+
         # Untagged-commit form: <tag>-<commits since tag>-g<hash>[-dirty], e.g. 0.29.2-3-g1234567-dirty
         if "-" in version:
             parts = version.split("-")
             base_version = parts[0]
-
-            # no tag: "<hash>-dirty" has no dot, so treat as unknown (a clean bare hash never reaches this branch)
-            if "." not in base_version:
-                return None
 
             commits_since = parts[1] if len(parts) > 1 else "0"
 
