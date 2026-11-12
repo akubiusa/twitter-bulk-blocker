@@ -1142,7 +1142,6 @@ class TwitterAPI:
 
         Returns:
             (message, error_type); error_type is the 403 classification, or None otherwise.
-            NOTE: currently returns a bare str (not a tuple) when the JSON body has "errors", which breaks callers' tuple unpacking.
         """
         status_messages = {
             400: "不正なリクエスト",
@@ -1171,7 +1170,7 @@ class TwitterAPI:
                             error_details.append(f"{msg} (code: {code})")
                         else:
                             error_details.append(msg)
-                    return f"{base_msg} - {', '.join(error_details)}"
+                    return f"{base_msg} - {', '.join(error_details)}", None
         except:
             pass
         
