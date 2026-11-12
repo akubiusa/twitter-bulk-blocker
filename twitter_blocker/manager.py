@@ -676,7 +676,7 @@ class BulkBlockManager:
     ) -> None:
         """Block the user via the API and record the outcome.
 
-        NOTE: the retryable/permanent split below is currently ineffective (should_retry returns a tuple, so every failure is recorded as retryable), and block_user returns "message" while this reads "error_message", so the stored error message is always "Unknown error".
+        NOTE: the retryable/permanent split below is currently ineffective (should_retry returns a tuple, so every failure is recorded as retryable).
         """
         print(f"  → ブロック実行: {user_info['name']} (ID: {user_info['id']})")
         block_result = self.api.block_user(user_info["id"], screen_name)
@@ -695,8 +695,8 @@ class BulkBlockManager:
             )
         else:
             error_msg = (
-                block_result.get("error_message", "Unknown error")[:200]
-                if block_result.get("error_message")
+                block_result.get("message", "Unknown error")[:200]
+                if block_result.get("message")
                 else "Unknown error"
             )
             status_code = block_result.get("status_code", 0)
@@ -705,8 +705,8 @@ class BulkBlockManager:
             # Intended: classify as retryable or permanent (NOTE: should_retry returns a tuple, so the else branch is unreachable)
             user_status = user_info.get("user_status", "active")
             status_code = block_result.get("status_code", 0)
-            error_message = block_result.get("error_message", "Unknown error")
-            
+            error_message = block_result.get("message", "Unknown error")
+
             if self.retry_manager.should_retry(
                 user_status,
                 status_code,
