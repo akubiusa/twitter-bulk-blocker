@@ -98,7 +98,7 @@ while [ $PULL_COMPLETED = false ]; do
     if [ $CURRENT_TIME -gt $DEADLINE ]; then
         echo "❌ タイムアウトしました (${TIMEOUT_MINUTES}分経過)"
         echo "💡 手動で確認してください:"
-        echo "   ssh Cinnamon 'cd /opt/docker && docker compose logs'"
+        echo "   ssh Cinnamon 'cd /mnt/hdd/cinnamon/twitter-auto-blocking/bulk-block-users && docker compose logs'"
         exit 1
     fi
     

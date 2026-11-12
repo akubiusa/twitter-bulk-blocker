@@ -173,7 +173,7 @@ execute_update_action() {
         
         # Run docker compose down
         log_message "INFO" "docker compose down実行"
-        if ssh Cinnamon "cd /opt/docker && docker compose down" 2>>"$LOG_FILE"; then
+        if ssh Cinnamon "cd /mnt/hdd/cinnamon/twitter-auto-blocking/bulk-block-users && docker compose down" 2>>"$LOG_FILE"; then
             log_message "INFO" "docker compose down成功"
             
             # Wait for the redeploy
