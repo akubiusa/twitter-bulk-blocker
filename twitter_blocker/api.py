@@ -1568,31 +1568,24 @@ class TwitterAPI:
         """Merge the cached profile with the per-login relationship flags.
 
         Returns:
-            Combined dict (missing relationship flags default to False), or None when no profile is cached.
+            Combined dict, or None when the profile or the current login user's relationship data is not cached.
         """
         profile_data = self._get_profile_from_cache(user_id)
         if not profile_data:
             return None
-        
+
         relationship_data = self._get_relationship_from_cache(user_id)
-        
+        if not relationship_data:
+            return None
+
         combined_data = profile_data.copy()
-        if relationship_data:
-            combined_data.update({
-                "following": relationship_data.get("following", False),
-                "followed_by": relationship_data.get("followed_by", False),
-                "blocking": relationship_data.get("blocking", False),
-                "blocked_by": relationship_data.get("blocked_by", False),
-            })
-        else:
-            # No relationship cached: assume none
-            combined_data.update({
-                "following": False,
-                "followed_by": False,
-                "blocking": False,
-                "blocked_by": False,
-            })
-        
+        combined_data.update({
+            "following": relationship_data.get("following", False),
+            "followed_by": relationship_data.get("followed_by", False),
+            "blocking": relationship_data.get("blocking", False),
+            "blocked_by": relationship_data.get("blocked_by", False),
+        })
+
         return combined_data
     
     def _check_long_term_403_patterns(self) -> List[str]:
